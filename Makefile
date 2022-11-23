@@ -1,7 +1,13 @@
-# Registry to publish images to
-REGISTRY?=upload.rocks.canonical.com:5000
-# Image URL to use all building/pushing image targets
-IMG ?= $(REGISTRY)/cdk/capi/cluster-api-juju-controller:dev
+# Registry for images
+REGISTRY ?= rocks.canonical.com:5000
+IMG_PATH ?= /cdk/capi/
+IMG_NAME ?= capi-juju-controller
+IMG_TAG ?= latest
+# Image URL to use all building/pushing image targets (note the inclusion of upload)
+IMG ?= upload.$(REGISTRY)$(IMG_PATH)$(IMG_NAME):$(IMG_TAG)
+# Deployment image used when deploying - does not include the upload portion of the URL
+DEPLOY_IMG ?= $(REGISTRY)$(IMG_PATH)$(IMG_NAME):$(IMG_TAG)
+
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
 ENVTEST_K8S_VERSION = 1.25.0
 
@@ -113,7 +119,7 @@ uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified 
 
 .PHONY: deploy
 deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
+	cd config/manager && $(KUSTOMIZE) edit set image controller=${DEPLOY_IMG}
 	$(KUSTOMIZE) build config/default | kubectl apply -f -
 
 .PHONY: undeploy
