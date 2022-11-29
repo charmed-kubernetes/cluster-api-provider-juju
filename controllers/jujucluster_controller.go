@@ -68,7 +68,7 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			// Could not find the owner yet, this is not an error and will rereconcile when the owner gets set.
 			return ctrl.Result{}, nil
 		}
-		log.Error(err, "failed to get Owner Cluster")
+		log.Error(err, "failed to get owner Cluster")
 		return ctrl.Result{}, err
 	}
 
@@ -77,7 +77,7 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, nil
 	}
 
-	log.Info("Retrieved Owner Cluster successfully")
+	log.Info("Retrieved owner Cluster successfully")
 
 	return ctrl.Result{}, nil
 }

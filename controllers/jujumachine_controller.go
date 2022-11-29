@@ -77,7 +77,7 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, nil
 	}
 
-	log.Info("Retrieved Owner Machine successfully")
+	log.Info("Retrieved owner Machine successfully")
 
 	return ctrl.Result{}, nil
 }

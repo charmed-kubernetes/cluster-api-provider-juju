@@ -20,7 +20,7 @@ metadata:
     cluster.x-k8s.io/cluster-name: cluster-sample
     cluster.x-k8s.io/control-plane: "false"
 spec:
-  clusterName: jujucluster-sample
+  clusterName: cluster-sample
   bootstrap:
     dataSecretName: "asdf"
   infrastructureRef:
