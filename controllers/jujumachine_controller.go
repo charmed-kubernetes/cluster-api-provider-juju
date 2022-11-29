@@ -18,7 +18,6 @@ package controllers
 
 import (
 	"context"
-	"errors"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -74,7 +73,8 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	if machine == nil {
-		return ctrl.Result{}, errors.New("owner machine was nil")
+		log.Info("Machine owner was nil")
+		return ctrl.Result{}, nil
 	}
 
 	log.Info("Retrieved Owner Machine successfully")

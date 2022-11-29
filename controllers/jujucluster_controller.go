@@ -18,7 +18,6 @@ package controllers
 
 import (
 	"context"
-	"errors"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -74,7 +73,8 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	if cluster == nil {
-		return ctrl.Result{}, errors.New("owner cluster was nil")
+		log.Info("Cluster owner was nil")
+		return ctrl.Result{}, nil
 	}
 
 	log.Info("Retrieved Owner Cluster successfully")
