@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: juju-client
+  namespace: juju-client
+spec:
+  serviceAccountName: juju-client
+  containers:
+  - name: juju-client
+    env:
+    - name: KUBECONFIG
+      value: "~/.kube/config"
+    image: rocks.canonical.com:443/cdk/capi/juju-client:latest
+    command: ["/bin/sh","-c"]
+    args: ["./kubectl config set-cluster cluster --server=https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT_HTTPS --certificate-authority=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt --embed-certs;
+            ./kubectl config set-credentials user --token=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token);
+            ./kubectl config set-context context --cluster=cluster --user=user;
+            ./kubectl config use-context context;
+            ./juju version; 
+            ./juju add-k8s --client --storage=mystorage my-k8s-cloud;
+            ./juju clouds;
+            ./juju bootstrap my-k8s-cloud"]
