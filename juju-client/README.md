@@ -10,6 +10,8 @@ The Make file contains some variables that determine what versions of the Juju c
 Once those are set to your liking, you can build and push the image like so:
 
 ```
+# Download the juju client and kubectl
+make juju
 make docker-build docker-push
 ```
 
