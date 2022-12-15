@@ -154,17 +154,11 @@ func (r *JujuClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 func (r *JujuClusterReconciler) createJujuControllerResources(ctx context.Context, cluster *clusterv1.Cluster, jujuCluster *infrastructurev1beta1.JujuCluster) error {
 	log := log.FromContext(ctx)
-	log.Info("Creating service account for juju client")
+
 	clientSA := &kcore.ServiceAccount{}
 	clientSA.Name = jujuCluster.Name + "-juju-client"
 	clientSA.Namespace = jujuCluster.Namespace
-	err := r.Create(ctx, clientSA)
-	if err != nil {
-		log.Error(err, "failed to create client service account")
-		return err
-	}
 
-	log.Info("Creating cluser role binding for juju client service account")
 	clientCRB := &krbac.ClusterRoleBinding{}
 	clientCRB.Name = jujuCluster.Name + "-juju-client"
 	clientCRB.RoleRef = krbac.RoleRef{
@@ -177,26 +171,14 @@ func (r *JujuClusterReconciler) createJujuControllerResources(ctx context.Contex
 		Name:      clientSA.Name,
 		Namespace: jujuCluster.Namespace,
 	}}
-	err = r.Create(ctx, clientCRB)
-	if err != nil {
-		log.Error(err, "failed to create client cluster role binding")
-		return err
-	}
 
-	log.Info("Creating secret for juju client service account")
 	clientSecret := &kcore.Secret{}
 	clientSecret.Name = jujuCluster.Name + "-juju-client"
 	clientSecret.Namespace = jujuCluster.Namespace
 	clientSecret.Annotations = make(map[string]string)
 	clientSecret.Annotations["kubernetes.io/service-account.name"] = clientSA.Name
 	clientSecret.Type = kcore.SecretTypeServiceAccountToken
-	err = r.Create(ctx, clientSecret)
-	if err != nil {
-		log.Error(err, "failed to create client secret")
-		return err
-	}
 
-	log.Info("Creating job for juju client")
 	cloudName := jujuCluster.Name + "-k8s-cloud"
 	containerArgs := fmt.Sprintf("./kubectl config set-cluster cluster --server=https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT_HTTPS --certificate-authority=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt --embed-certs;"+
 		"./kubectl config set-credentials user --token=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token);"+
@@ -234,10 +216,20 @@ func (r *JujuClusterReconciler) createJujuControllerResources(ctx context.Contex
 			},
 		},
 	}
-	err = r.Create(ctx, job)
-	if err != nil {
-		log.Error(err, "failed to create client job")
-		return err
+
+	objects := []client.Object{
+		clientSA,
+		clientCRB,
+		clientSecret,
+		job,
+	}
+
+	log.Info("Creating resources necessary for bootstrapping juju controller")
+	for _, obj := range objects {
+		if err := r.Create(ctx, obj); err != nil {
+			log.Error(err, "failed to create object", "kind", obj.GetObjectKind().GroupVersionKind().Kind)
+			return err
+		}
 	}
 
 	return nil
@@ -246,116 +238,72 @@ func (r *JujuClusterReconciler) createJujuControllerResources(ctx context.Contex
 func (r *JujuClusterReconciler) deleteJujuControllerResources(ctx context.Context, cluster *clusterv1.Cluster, jujuCluster *infrastructurev1beta1.JujuCluster) error {
 	log := log.FromContext(ctx)
 
-	log.Info("Deleting service account for juju client")
 	clientSA := &kcore.ServiceAccount{}
-	objectKey := client.ObjectKey{
+	clientSAKey := client.ObjectKey{
 		Namespace: jujuCluster.Namespace,
 		Name:      jujuCluster.Name + "-juju-client",
 	}
-	err := r.Get(ctx, objectKey, clientSA)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			log.Info("juju client service account not found when attempting deletion")
-		} else {
-			log.Error(err, "could not get juju client service account")
-			return err
-		}
-	} else {
-		err = r.Delete(ctx, clientSA)
-		if err != nil {
-			log.Error(err, "juju client service account could not be deleted")
-			return err
-		}
-	}
 
-	log.Info("Deleting cluser role binding for juju client service account")
 	clientCRB := &krbac.ClusterRoleBinding{}
-	objectKey = client.ObjectKey{
+	clientCRBKey := client.ObjectKey{
 		Namespace: jujuCluster.Namespace,
 		Name:      jujuCluster.Name + "-juju-client",
 	}
-	err = r.Get(ctx, objectKey, clientCRB)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			log.Info("juju client cluster role binding not found when attempting deletion")
-		} else {
-			log.Error(err, "could not get juju client cluster role binding")
-			return err
-		}
-	} else {
-		err = r.Delete(ctx, clientCRB)
-		if err != nil {
-			log.Error(err, "juju client cluster role binding could not be deleted")
-			return err
-		}
-	}
 
-	log.Info("Deleting secret for juju client service account")
 	clientSecret := &kcore.Secret{}
-	objectKey = client.ObjectKey{
+	clientSecretKey := client.ObjectKey{
 		Namespace: jujuCluster.Namespace,
 		Name:      jujuCluster.Name + "-juju-client",
 	}
-	err = r.Get(ctx, objectKey, clientSecret)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			log.Info("juju client secret not found when attempting deletion")
-		} else {
-			log.Error(err, "could not get juju client secret")
-			return err
-		}
-	} else {
-		err = r.Delete(ctx, clientSecret)
-		if err != nil {
-			log.Error(err, "juju client secret could not be deleted")
-			return err
-		}
-	}
 
-	log.Info("Deleting job for juju client")
 	job := &kbatch.Job{}
-	objectKey = client.ObjectKey{
+	jobKey := client.ObjectKey{
 		Namespace: jujuCluster.Namespace,
 		Name:      jujuCluster.Name + "-juju-controller-bootstrap",
 	}
-	err = r.Get(ctx, objectKey, job)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			log.Info("juju client bootstrap job not found when attempting deletion")
-		} else {
-			log.Error(err, "could not get juju client bootstrap job")
-			return err
-		}
-	} else {
-		bg := metav1.DeletePropagationBackground
-		options := client.DeleteOptions{
-			PropagationPolicy: &bg,
-		}
-		err = r.Delete(ctx, job, &options)
-		if err != nil {
-			log.Error(err, "juju client bootstrap job could not be deleted")
-			return err
-		}
-	}
 
-	log.Info("Deleting juju controller namespace")
 	namespace := &kcore.Namespace{}
-	objectKey = client.ObjectKey{
+	namespaceKey := client.ObjectKey{
 		Name: fmt.Sprintf("controller-%s", jujuCluster.Name+"-k8s-cloud"),
 	}
-	err = r.Get(ctx, objectKey, namespace)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			log.Info("juju controller namespace not found when attempting deletion")
-		} else {
-			log.Error(err, "could not get juju controller namespace")
-			return err
-		}
-	} else {
-		err = r.Delete(ctx, namespace)
+
+	type objectKeyPair struct {
+		object  client.Object
+		key     client.ObjectKey
+		options client.DeleteOptions
+	}
+
+	bg := metav1.DeletePropagationBackground
+	jobOptions := client.DeleteOptions{
+		PropagationPolicy: &bg,
+	}
+
+	objectKeyPairs := []objectKeyPair{
+		{clientSecret, clientSecretKey, client.DeleteOptions{}},
+		{clientCRB, clientCRBKey, client.DeleteOptions{}},
+		{clientSA, clientSAKey, client.DeleteOptions{}},
+		{job, jobKey, jobOptions},
+		{namespace, namespaceKey, client.DeleteOptions{}},
+	}
+	for _, pair := range objectKeyPairs {
+
+		err := r.Get(ctx, pair.key, pair.object)
+		name := pair.key.Name
+		kind := pair.object.GetObjectKind().GroupVersionKind().Kind
 		if err != nil {
-			log.Error(err, "juju controller namespace could not be deleted")
-			return err
+			if apierrors.IsNotFound(err) {
+				log.Info(fmt.Sprintf("%s not found when attempting deletion", name))
+			} else {
+				log.Error(err, fmt.Sprintf("could not get %s", name))
+				return err
+			}
+		} else {
+			log.Info(fmt.Sprintf("Deleting %s %s", kind, name))
+			err = r.Delete(ctx, pair.object, &pair.options)
+			if err != nil {
+				log.Error(err, fmt.Sprintf("%s %s could not be deleted", kind, name))
+				return err
+			}
 		}
 	}
 
