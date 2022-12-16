@@ -17,8 +17,11 @@ limitations under the License.
 package controllers
 
 import (
+	"bytes"
 	"context"
+	"flag"
 	"fmt"
+	"io"
 
 	infrastructurev1beta1 "github.com/charmed-kubernetes/cluster-api-provider-juju/api/v1beta1"
 	kbatch "k8s.io/api/batch/v1"
@@ -27,6 +30,9 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	"sigs.k8s.io/cluster-api/util"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -112,6 +118,8 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		log.Info("bootstrap job completed")
 	}
 
+	r.getClientLogs(ctx, cluster, jujuCluster)
+
 	// examine DeletionTimestamp to determine if object is under deletion
 	if jujuCluster.ObjectMeta.DeletionTimestamp.IsZero() {
 		// The object is not being deleted, so if it does not have our finalizer,
@@ -187,7 +195,8 @@ func (r *JujuClusterReconciler) createJujuControllerResources(ctx context.Contex
 		"./juju version;"+
 		"./juju add-k8s --client %s;"+
 		"./juju clouds;"+
-		"./juju bootstrap %s", cloudName, cloudName)
+		"./juju bootstrap %s;"+
+		"./juju show-controller --show-password", cloudName, cloudName)
 	job := &kbatch.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Labels:      make(map[string]string),
@@ -227,7 +236,7 @@ func (r *JujuClusterReconciler) createJujuControllerResources(ctx context.Contex
 	log.Info("Creating resources necessary for bootstrapping juju controller")
 	for _, obj := range objects {
 		if err := r.Create(ctx, obj); err != nil {
-			log.Error(err, "failed to create object", "kind", obj.GetObjectKind().GroupVersionKind().Kind)
+			log.Error(err, "failed to create object")
 			return err
 		}
 	}
@@ -305,6 +314,58 @@ func (r *JujuClusterReconciler) deleteJujuControllerResources(ctx context.Contex
 				return err
 			}
 		}
+	}
+
+	return nil
+}
+
+func (r *JujuClusterReconciler) getClientLogs(ctx context.Context, cluster *clusterv1.Cluster, jujuCluster *infrastructurev1beta1.JujuCluster) error {
+	log := log.FromContext(ctx)
+
+	// N.B controller runtime client does not support getting subresources like logs from pods
+	// have to use client-go
+
+	// Try using the in-cluster config,
+	// if theres an error (such as when running outside the cluster), fall back to kubeconfig
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		kubeconfig := (*flag.Lookup("kubeconfig")).Value.(flag.Getter).Get().(string)
+		// use the current context in kubeconfig
+		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
+		if err != nil {
+			panic(err.Error())
+		}
+	}
+
+	// creates the clientset
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		panic(err.Error())
+	}
+
+	job, err := clientset.BatchV1().Jobs(jujuCluster.Namespace).Get(context.TODO(), jujuCluster.Name+"-juju-controller-bootstrap", metav1.GetOptions{})
+	if err != nil {
+		log.Error(err, fmt.Sprintf("error getting job %s in namespace %s", jujuCluster.Name+"-juju-controller-bootstrap", jujuCluster.Namespace))
+	}
+
+	pods, err := clientset.CoreV1().Pods(jujuCluster.Namespace).List(context.TODO(), metav1.ListOptions{LabelSelector: metav1.FormatLabelSelector(job.Spec.Selector)})
+	if err != nil {
+		log.Error(err, fmt.Sprintf("error listing pods %s in namespace", jujuCluster.Namespace))
+	}
+
+	for _, pod := range pods.Items {
+		req := clientset.CoreV1().Pods(jujuCluster.Namespace).GetLogs(pod.Name, &kcore.PodLogOptions{})
+		podLogs, err := req.Stream(ctx)
+		if err != nil {
+			log.Error(err, "error opening stream")
+		}
+		defer podLogs.Close()
+		buf := new(bytes.Buffer)
+		_, err = io.Copy(buf, podLogs)
+		if err != nil {
+			log.Error(err, "error in copying information from logs to buffer")
+		}
+		log.Info("obtained logs from pod", "logs", buf.String())
 	}
 
 	return nil
