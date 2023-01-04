@@ -22,8 +22,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strings"
 
 	infrastructurev1beta1 "github.com/charmed-kubernetes/cluster-api-provider-juju/api/v1beta1"
+	"gopkg.in/yaml.v3"
 	kbatch "k8s.io/api/batch/v1"
 	kcore "k8s.io/api/core/v1"
 	krbac "k8s.io/api/rbac/v1"
@@ -40,6 +42,18 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
+
+// JujuConfig is used for parsing necessary config values from juju-client output
+type JujuConfig struct {
+	Details struct {
+		APIEndpoints []string `yaml:"api-endpoints"`
+		CACert       string   `yaml:"ca-cert"`
+	}
+	Account struct {
+		User     string `yaml:"user"`
+		Password string `yaml:"password"`
+	}
+}
 
 // JujuClusterReconciler reconciles a JujuCluster object
 type JujuClusterReconciler struct {
@@ -80,16 +94,16 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	cluster, err := util.GetOwnerCluster(ctx, r.Client, jujuCluster.ObjectMeta)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			// Could not find the owner yet, this is not an error and will rereconcile when the owner gets set.
-			return ctrl.Result{}, nil
+			log.Info("Waiting for cluster owner to be found")
+			return ctrl.Result{Requeue: true}, nil
 		}
 		log.Error(err, "failed to get owner Cluster")
 		return ctrl.Result{}, err
 	}
 
 	if cluster == nil {
-		log.Info("Cluster owner was nil")
-		return ctrl.Result{}, nil
+		log.Info("Waiting for cluster owner to be non-nil")
+		return ctrl.Result{Requeue: true}, nil
 	}
 
 	// Check if a juju controller has been created yet via the job
@@ -118,7 +132,28 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		log.Info("bootstrap job completed")
 	}
 
-	r.getClientLogs(ctx, cluster, jujuCluster)
+	// Check if juju config map has been created yet
+	// Check if a juju controller has been created yet via the job
+	jujuConfigMap := &kcore.ConfigMap{}
+	objectKey = client.ObjectKey{
+		Namespace: jujuCluster.Namespace,
+		Name:      jujuCluster.Name + "-juju-controller-config",
+	}
+	if err := r.Get(ctx, objectKey, jujuConfigMap); err != nil {
+		if apierrors.IsNotFound(err) {
+			log.Info("juju controller config not found, creating it now")
+			if err := r.createJujuConfigMap(ctx, cluster, jujuCluster); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{Requeue: true}, nil
+		} else {
+			return ctrl.Result{}, err
+		}
+	}
+
+	// Connect juju API to controller
+	// https://github.com/charmed-kubernetes/autoscaler/blob/juju/cluster-autoscaler/cloudprovider/juju/juju_api.go
+	log.Info("Connecting juju API to controller")
 
 	// examine DeletionTimestamp to determine if object is under deletion
 	if jujuCluster.ObjectMeta.DeletionTimestamp.IsZero() {
@@ -150,6 +185,7 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, nil
 	}
 
+	log.Info("Stopping reconciliation")
 	return ctrl.Result{}, nil
 }
 
@@ -192,10 +228,8 @@ func (r *JujuClusterReconciler) createJujuControllerResources(ctx context.Contex
 		"./kubectl config set-credentials user --token=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token);"+
 		"./kubectl config set-context context --cluster=cluster --user=user;"+
 		"./kubectl config use-context context;"+
-		"./juju version;"+
-		"./juju add-k8s --client %s;"+
-		"./juju clouds;"+
-		"./juju bootstrap %s;"+
+		"./juju add-k8s --quiet --client %s;"+
+		"./juju bootstrap %s --quiet;"+
 		"./juju show-controller --show-password", cloudName, cloudName)
 	job := &kbatch.Job{
 		ObjectMeta: metav1.ObjectMeta{
@@ -319,7 +353,7 @@ func (r *JujuClusterReconciler) deleteJujuControllerResources(ctx context.Contex
 	return nil
 }
 
-func (r *JujuClusterReconciler) getClientLogs(ctx context.Context, cluster *clusterv1.Cluster, jujuCluster *infrastructurev1beta1.JujuCluster) error {
+func (r *JujuClusterReconciler) getClientLogs(ctx context.Context, cluster *clusterv1.Cluster, jujuCluster *infrastructurev1beta1.JujuCluster) (string, error) {
 	log := log.FromContext(ctx)
 
 	// N.B controller runtime client does not support getting subresources like logs from pods
@@ -346,26 +380,80 @@ func (r *JujuClusterReconciler) getClientLogs(ctx context.Context, cluster *clus
 	job, err := clientset.BatchV1().Jobs(jujuCluster.Namespace).Get(context.TODO(), jujuCluster.Name+"-juju-controller-bootstrap", metav1.GetOptions{})
 	if err != nil {
 		log.Error(err, fmt.Sprintf("error getting job %s in namespace %s", jujuCluster.Name+"-juju-controller-bootstrap", jujuCluster.Namespace))
+		return "", err
 	}
 
 	pods, err := clientset.CoreV1().Pods(jujuCluster.Namespace).List(context.TODO(), metav1.ListOptions{LabelSelector: metav1.FormatLabelSelector(job.Spec.Selector)})
 	if err != nil {
 		log.Error(err, fmt.Sprintf("error listing pods %s in namespace", jujuCluster.Namespace))
+		return "", err
 	}
 
+	logs := ""
 	for _, pod := range pods.Items {
 		req := clientset.CoreV1().Pods(jujuCluster.Namespace).GetLogs(pod.Name, &kcore.PodLogOptions{})
 		podLogs, err := req.Stream(ctx)
 		if err != nil {
 			log.Error(err, "error opening stream")
+			return "", err
 		}
 		defer podLogs.Close()
 		buf := new(bytes.Buffer)
 		_, err = io.Copy(buf, podLogs)
 		if err != nil {
 			log.Error(err, "error in copying information from logs to buffer")
+			return "", err
 		}
-		log.Info("obtained logs from pod", "logs", buf.String())
+
+		logs = logs + buf.String()
+	}
+
+	return logs, nil
+}
+
+func getJujuConfigFromLogs(ctx context.Context, logs string, cloud string) (JujuConfig, error) {
+	log := log.FromContext(ctx)
+
+	split := strings.Split(logs, fmt.Sprintf("%s:\n", cloud))
+	yam := split[1]
+	config := JujuConfig{}
+	err := yaml.Unmarshal([]byte(yam), &config)
+	if err != nil {
+		log.Error(err, "error unmarshalling YAML data into config struct")
+		return JujuConfig{}, err
+	}
+
+	return config, nil
+
+}
+
+func (r *JujuClusterReconciler) createJujuConfigMap(ctx context.Context, cluster *clusterv1.Cluster, jujuCluster *infrastructurev1beta1.JujuCluster) error {
+	log := log.FromContext(ctx)
+
+	logs, err := r.getClientLogs(ctx, cluster, jujuCluster)
+	if err != nil {
+		log.Error(err, "error getting juju client pod logs")
+		return err
+	}
+
+	jujuConfig, err := getJujuConfigFromLogs(ctx, logs, jujuCluster.Name+"-k8s-cloud")
+	if err != nil {
+		log.Error(err, "error getting juju config from client pod logs")
+		return err
+	}
+
+	jujuConfigMap := &kcore.ConfigMap{}
+	jujuConfigMap.Name = jujuCluster.Name + "-juju-controller-config"
+	jujuConfigMap.Namespace = jujuCluster.Namespace
+	jujuConfigMap.Data = make(map[string]string)
+	jujuConfigMap.Data["api_endpoints"] = strings.Join(jujuConfig.Details.APIEndpoints[:], ",")
+	jujuConfigMap.Data["ca_cert"] = jujuConfig.Details.CACert
+	jujuConfigMap.Data["user"] = jujuConfig.Account.User
+	jujuConfigMap.Data["password"] = jujuConfig.Account.Password
+
+	if err := r.Create(ctx, jujuConfigMap); err != nil {
+		log.Error(err, "failed to create juju controller config map")
+		return err
 	}
 
 	return nil
