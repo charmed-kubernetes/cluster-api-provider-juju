@@ -25,6 +25,9 @@ import (
 	"strings"
 
 	infrastructurev1beta1 "github.com/charmed-kubernetes/cluster-api-provider-juju/api/v1beta1"
+	"github.com/charmed-kubernetes/cluster-api-provider-juju/juju"
+	"github.com/juju/juju/api/connector"
+	"github.com/juju/juju/cloud"
 	"gopkg.in/yaml.v3"
 	kbatch "k8s.io/api/batch/v1"
 	kcore "k8s.io/api/core/v1"
@@ -68,6 +71,8 @@ type JujuClusterReconciler struct {
 //+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -104,6 +109,36 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	if cluster == nil {
 		log.Info("Waiting for cluster owner to be non-nil")
 		return ctrl.Result{Requeue: true}, nil
+	}
+
+	// examine DeletionTimestamp to determine if object is under deletion
+	if jujuCluster.ObjectMeta.DeletionTimestamp.IsZero() {
+		// The object is not being deleted, so if it does not have our finalizer,
+		// then lets add the finalizer and update the object. This is equivalent
+		// registering our finalizer.
+		if !controllerutil.ContainsFinalizer(jujuCluster, infrastructurev1beta1.JujuClusterFinalizer) {
+			controllerutil.AddFinalizer(jujuCluster, infrastructurev1beta1.JujuClusterFinalizer)
+			if err := r.Update(ctx, jujuCluster); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+	} else {
+		// The object is being deleted
+		if controllerutil.ContainsFinalizer(jujuCluster, infrastructurev1beta1.JujuClusterFinalizer) {
+			// our finalizer is present, so lets handle controller resource deletion
+			if err := r.deleteJujuControllerResources(ctx, cluster, jujuCluster); err != nil {
+				return ctrl.Result{}, err
+			}
+
+			// remove our finalizer from the list and update it.
+			controllerutil.RemoveFinalizer(jujuCluster, infrastructurev1beta1.JujuClusterFinalizer)
+			if err := r.Update(ctx, jujuCluster); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+
+		// Stop reconciliation as the item is being deleted
+		return ctrl.Result{}, nil
 	}
 
 	// Check if a juju controller has been created yet via the job
@@ -152,37 +187,71 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	// Connect juju API to controller
-	// https://github.com/charmed-kubernetes/autoscaler/blob/juju/cluster-autoscaler/cloudprovider/juju/juju_api.go
-	log.Info("Connecting juju API to controller")
+	// https://github.com/juju/juju/blob/d5d762b6053b60ab20b4709c0c3dbfb3deb1d1f4/api/connector.go#L22
+	connector, err := connector.NewSimple(connector.SimpleConfig{
+		ControllerAddresses: strings.Split(jujuConfigMap.Data["api_endpoints"], ","),
+		CACert:              jujuConfigMap.Data["ca_cert"],
+		Username:            jujuConfigMap.Data["user"],
+		Password:            jujuConfigMap.Data["password"],
+	})
 
-	// examine DeletionTimestamp to determine if object is under deletion
-	if jujuCluster.ObjectMeta.DeletionTimestamp.IsZero() {
-		// The object is not being deleted, so if it does not have our finalizer,
-		// then lets add the finalizer and update the object. This is equivalent
-		// registering our finalizer.
-		if !controllerutil.ContainsFinalizer(jujuCluster, infrastructurev1beta1.JujuClusterFinalizer) {
-			controllerutil.AddFinalizer(jujuCluster, infrastructurev1beta1.JujuClusterFinalizer)
-			if err := r.Update(ctx, jujuCluster); err != nil {
-				return ctrl.Result{}, err
-			}
+	if err != nil {
+		log.Error(err, "failed to create simple connector")
+		return ctrl.Result{}, err
+	}
+
+	jujuAPI, err := juju.NewJujuAPi(connector)
+	if err != nil {
+		log.Error(err, "failed to create juju API")
+		return ctrl.Result{}, err
+	}
+
+	log.Info("Connected Juju API to controller")
+	cloudExists, err := jujuAPI.CloudExists("capi-vsphere")
+	if err != nil {
+		log.Error(err, "failed to query existing clouds")
+		return ctrl.Result{}, err
+	}
+
+	if !cloudExists {
+		log.Info("cloud not found, creating it now")
+		vsphereRegion := cloud.Region{
+			Name:     "Boston",
+			Endpoint: "10.246.152.100",
 		}
-	} else {
-		// The object is being deleted
-		if controllerutil.ContainsFinalizer(jujuCluster, infrastructurev1beta1.JujuClusterFinalizer) {
-			// our finalizer is present, so lets handle controller resource deletion
-			if err := r.deleteJujuControllerResources(ctx, cluster, jujuCluster); err != nil {
-				return ctrl.Result{}, err
-			}
 
-			// remove our finalizer from the list and update it.
-			controllerutil.RemoveFinalizer(jujuCluster, infrastructurev1beta1.JujuClusterFinalizer)
-			if err := r.Update(ctx, jujuCluster); err != nil {
-				return ctrl.Result{}, err
-			}
+		vsphereCloud := cloud.Cloud{
+			Name:      "capi-vsphere",
+			Type:      "vsphere",
+			Endpoint:  "10.246.152.100",
+			Regions:   []cloud.Region{vsphereRegion},
+			AuthTypes: []cloud.AuthType{"userpass"},
 		}
 
-		// Stop reconciliation as the item is being deleted
-		return ctrl.Result{}, nil
+		err = jujuAPI.AddCloud(vsphereCloud, true)
+		if err != nil {
+			log.Error(err, "failed to add cloud")
+			return ctrl.Result{}, err
+		}
+	}
+
+	credentialExists, err := jujuAPI.CredentialExists("capi-vsphere", "capi-vsphere")
+	if err != nil {
+		log.Error(err, "failed to query existing credentials")
+		return ctrl.Result{}, err
+	}
+	if !credentialExists {
+		log.Info("credential not found, creating it now")
+		credential := cloud.NewCredential("userpass", map[string]string{
+			"username": "k8s-crew@vsphere.local",
+			"password": "secret",
+			"vmfolder": "vmfolder",
+		})
+		err = jujuAPI.AddCredential(credential, "capi-vsphere", "capi-vsphere")
+		if err != nil {
+			log.Error(err, "failed to add credential")
+			return ctrl.Result{}, err
+		}
 	}
 
 	log.Info("Stopping reconciliation")
@@ -228,8 +297,10 @@ func (r *JujuClusterReconciler) createJujuControllerResources(ctx context.Contex
 		"./kubectl config set-credentials user --token=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token);"+
 		"./kubectl config set-context context --cluster=cluster --user=user;"+
 		"./kubectl config use-context context;"+
-		"./juju add-k8s --quiet --client %s;"+
-		"./juju bootstrap %s --quiet;"+
+		"./juju add-k8s --client %s;"+
+		"./juju bootstrap %s;"+
+		"./juju add-user capi-juju;"+
+		"./juju grant capi-juju superuser;"+
 		"./juju show-controller --show-password", cloudName, cloudName)
 	job := &kbatch.Job{
 		ObjectMeta: metav1.ObjectMeta{
@@ -450,6 +521,11 @@ func (r *JujuClusterReconciler) createJujuConfigMap(ctx context.Context, cluster
 	jujuConfigMap.Data["ca_cert"] = jujuConfig.Details.CACert
 	jujuConfigMap.Data["user"] = jujuConfig.Account.User
 	jujuConfigMap.Data["password"] = jujuConfig.Account.Password
+
+	if err := controllerutil.SetControllerReference(jujuCluster, jujuConfigMap, r.Scheme); err != nil {
+		log.Error(err, "failed to set controller reference on config map")
+		return err
+	}
 
 	if err := r.Create(ctx, jujuConfigMap); err != nil {
 		log.Error(err, "failed to create juju controller config map")
