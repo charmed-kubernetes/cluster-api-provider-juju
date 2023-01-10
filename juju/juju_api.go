@@ -5,15 +5,31 @@ import (
 	"strings"
 
 	"github.com/juju/juju/api"
+	"github.com/juju/juju/api/base"
 	"github.com/juju/juju/api/client/application"
 	"github.com/juju/juju/api/client/cloud"
+	"github.com/juju/juju/api/client/modelconfig"
 	"github.com/juju/juju/api/client/modelmanager"
 	"github.com/juju/juju/api/client/usermanager"
 	"github.com/juju/juju/api/connector"
 	jujuCloud "github.com/juju/juju/cloud"
+	"github.com/juju/juju/core/constraints"
 	"github.com/juju/names/v4"
 	"github.com/pkg/errors"
 )
+
+type CreateModelInput struct {
+	Name           string
+	Cloud          string
+	CloudRegion    string
+	CredentialName string
+	Config         map[string]interface{}
+	Constraints    constraints.Value
+}
+
+type CreateModelResponse struct {
+	ModelInfo base.ModelInfo
+}
 
 type JujuAPI struct {
 	Connection        api.Connection
@@ -21,6 +37,7 @@ type JujuAPI struct {
 	modelClient       *modelmanager.Client
 	userClient        *usermanager.Client
 	cloudClient       *cloud.Client
+	modelConfigClient *modelconfig.Client
 }
 
 func NewJujuAPi(connector *connector.SimpleConnector) (*JujuAPI, error) {
@@ -35,6 +52,7 @@ func NewJujuAPi(connector *connector.SimpleConnector) (*JujuAPI, error) {
 	jujuAPI.modelClient = modelmanager.NewClient(conn)
 	jujuAPI.cloudClient = cloud.NewClient(conn)
 	jujuAPI.userClient = usermanager.NewClient(conn)
+	jujuAPI.modelConfigClient = modelconfig.NewClient(conn)
 	return jujuAPI, nil
 }
 
@@ -74,6 +92,32 @@ func (jujuAPI *JujuAPI) ModelExists(name string) (bool, error) {
 	}
 
 	return false, nil
+}
+
+func (jujuAPI *JujuAPI) CreateModel(input CreateModelInput) (*CreateModelResponse, error) {
+	currentUser := jujuAPI.GetCurrentUser(jujuAPI.Connection)
+	id := fmt.Sprintf("%s/%s/%s", input.Cloud, currentUser, input.CredentialName)
+	if !names.IsValidCloudCredential(id) {
+		return &CreateModelResponse{}, errors.Errorf("%q is not a valid credential id", id)
+	}
+	cloudCredTag := names.NewCloudCredentialTag(id)
+	modelInfo, err := jujuAPI.modelClient.CreateModel(input.Name, currentUser, input.Cloud, input.CloudRegion, cloudCredTag, input.Config)
+	if err != nil {
+		return nil, err
+	}
+
+	// set constraints when required
+	if input.Constraints.String() != "" {
+		return &CreateModelResponse{ModelInfo: modelInfo}, nil
+	}
+
+	// we have to set constraints
+	err = jujuAPI.modelConfigClient.SetModelConstraints(input.Constraints)
+	if err != nil {
+		return nil, err
+	}
+
+	return &CreateModelResponse{ModelInfo: modelInfo}, nil
 }
 
 func (jujuAPI *JujuAPI) AddCredential(credential jujuCloud.Credential, credentialName string, cloudName string) error {

@@ -23,11 +23,13 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	infrastructurev1beta1 "github.com/charmed-kubernetes/cluster-api-provider-juju/api/v1beta1"
 	"github.com/charmed-kubernetes/cluster-api-provider-juju/juju"
 	"github.com/juju/juju/api/connector"
 	"github.com/juju/juju/cloud"
+	"github.com/juju/juju/core/constraints"
 	"gopkg.in/yaml.v3"
 	kbatch "k8s.io/api/batch/v1"
 	kcore "k8s.io/api/core/v1"
@@ -168,7 +170,8 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			if err := r.createJujuControllerResources(ctx, cluster, jujuCluster); err != nil {
 				return ctrl.Result{}, err
 			}
-			return ctrl.Result{Requeue: true}, nil
+			// Give it some time to create the job
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		} else {
 			return ctrl.Result{}, err
 		}
@@ -249,6 +252,7 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 	}
 
+	// Check if credential has been created yet
 	credentialExists, err := jujuAPI.CredentialExists("capi-vsphere", "capi-vsphere")
 	if err != nil {
 		log.Error(err, "failed to query existing credentials")
@@ -260,13 +264,28 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		password := string(cloudSecret.Data["password"][:])
 		vmfolder := string(cloudSecret.Data["vmfolder"][:])
 		credential := cloud.NewCredential("userpass", map[string]string{
-			"username": username,
+			"user":     username,
 			"password": password,
 			"vmfolder": vmfolder,
 		})
 		err = jujuAPI.AddCredential(credential, "capi-vsphere", "capi-vsphere")
 		if err != nil {
 			log.Error(err, "failed to add credential")
+			return ctrl.Result{}, err
+		}
+	}
+
+	// Check if model has been created yet
+	modelExists, err := jujuAPI.ModelExists(jujuCluster.Name)
+	if err != nil {
+		log.Error(err, "failed to query existing models")
+		return ctrl.Result{}, err
+	}
+	if !modelExists {
+		log.Info("model not found, creating it now")
+		err = r.createModel(ctx, cluster, jujuCluster, *jujuAPI)
+		if err != nil {
+			log.Error(err, "Error creating model")
 			return ctrl.Result{}, err
 		}
 	}
@@ -552,39 +571,24 @@ func (r *JujuClusterReconciler) createJujuConfigMap(ctx context.Context, cluster
 	return nil
 }
 
-func (r *JujuClusterReconciler) getCloudSecret(ctx context.Context, cluster *clusterv1.Cluster, jujuCluster *infrastructurev1beta1.JujuCluster) error {
-	log := log.FromContext(ctx)
+func (r *JujuClusterReconciler) createModel(ctx context.Context, cluster *clusterv1.Cluster, jujuCluster *infrastructurev1beta1.JujuCluster, jujuAPI juju.JujuAPI) error {
+	_ = log.FromContext(ctx)
+	config := make(map[string]interface{})
+	input := juju.CreateModelInput{
+		Name:           jujuCluster.Name,
+		Cloud:          "capi-vsphere",
+		CloudRegion:    "Boston",
+		CredentialName: "capi-vsphere",
+		Config:         config,
+		Constraints:    constraints.Value{},
+	}
 
-	logs, err := r.getClientLogs(ctx, cluster, jujuCluster)
+	response, err := jujuAPI.CreateModel(input)
 	if err != nil {
-		log.Error(err, "error getting juju client pod logs")
 		return err
 	}
 
-	jujuConfig, err := getJujuConfigFromLogs(ctx, logs, jujuCluster.Name+"-k8s-cloud")
-	if err != nil {
-		log.Error(err, "error getting juju config from client pod logs")
-		return err
-	}
-
-	jujuConfigMap := &kcore.ConfigMap{}
-	jujuConfigMap.Name = jujuCluster.Name + "-juju-controller-config"
-	jujuConfigMap.Namespace = jujuCluster.Namespace
-	jujuConfigMap.Data = make(map[string]string)
-	jujuConfigMap.Data["api_endpoints"] = strings.Join(jujuConfig.Details.APIEndpoints[:], ",")
-	jujuConfigMap.Data["ca_cert"] = jujuConfig.Details.CACert
-	jujuConfigMap.Data["user"] = jujuConfig.Account.User
-	jujuConfigMap.Data["password"] = jujuConfig.Account.Password
-
-	if err := controllerutil.SetControllerReference(jujuCluster, jujuConfigMap, r.Scheme); err != nil {
-		log.Error(err, "failed to set controller reference on config map")
-		return err
-	}
-
-	if err := r.Create(ctx, jujuConfigMap); err != nil {
-		log.Error(err, "failed to create juju controller config map")
-		return err
-	}
+	log.Log.Info("Created model", "response", response)
 
 	return nil
 }
