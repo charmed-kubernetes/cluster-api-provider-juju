@@ -30,6 +30,7 @@ import (
 	"github.com/juju/juju/api/connector"
 	"github.com/juju/juju/cloud"
 	"github.com/juju/juju/core/constraints"
+	"github.com/pkg/errors"
 	"gopkg.in/yaml.v3"
 	kbatch "k8s.io/api/batch/v1"
 	kcore "k8s.io/api/core/v1"
@@ -42,6 +43,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	"sigs.k8s.io/cluster-api/util"
+	"sigs.k8s.io/cluster-api/util/patch"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -224,6 +226,7 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	log.Info("Connected Juju API to controller")
+
 	cloudExists, err := jujuAPI.CloudExists("capi-vsphere")
 	if err != nil {
 		log.Error(err, "failed to query existing clouds")
@@ -288,6 +291,16 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			log.Error(err, "Error creating model")
 			return ctrl.Result{}, err
 		}
+	}
+
+	helper, err := patch.NewHelper(jujuCluster, r.Client)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	log.Info("Patching cluster ready status to true")
+	jujuCluster.Status.Ready = true
+	if err := helper.Patch(ctx, jujuCluster); err != nil {
+		return ctrl.Result{}, errors.Wrapf(err, "couldn't patch cluster %q", jujuCluster.Name)
 	}
 
 	log.Info("Stopping reconciliation")

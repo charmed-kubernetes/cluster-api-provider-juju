@@ -18,7 +18,11 @@ package controllers
 
 import (
 	"context"
+	"strings"
 
+	"github.com/charmed-kubernetes/cluster-api-provider-juju/juju"
+	"github.com/juju/juju/api/connector"
+	kcore "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/cluster-api/util"
@@ -65,20 +69,94 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	machine, err := util.GetOwnerMachine(ctx, r.Client, jujuMachine.ObjectMeta)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			// Could not find the owner yet, this is not an error and will rereconcile when the owner gets set.
-			return ctrl.Result{}, nil
+			log.Info("Waiting for machine owner to be found")
+			return ctrl.Result{Requeue: true}, nil
 		}
 		log.Error(err, "failed to get Owner Machine")
 		return ctrl.Result{}, err
 	}
 
 	if machine == nil {
-		log.Info("Machine owner was nil")
+		log.Info("Waiting for machine owner to be non-nil")
+		return ctrl.Result{Requeue: true}, nil
+	}
+
+	// Fetch the Cluster.
+	cluster, err := util.GetClusterFromMetadata(ctx, r.Client, machine.ObjectMeta)
+	if err != nil {
+		log.Info("Machine is missing cluster label or cluster does not exist")
 		return ctrl.Result{}, nil
 	}
 
-	log.Info("Retrieved owner Machine successfully")
+	if !cluster.Status.InfrastructureReady {
+		log.Info("Cluster is not ready yet")
+		return ctrl.Result{}, nil
+	}
 
+	log.Info("Cluster is ready!")
+
+	// Get Infra cluster
+	jujuCluster := &infrastructurev1beta1.JujuCluster{}
+	objectKey := client.ObjectKey{
+		Namespace: jujuMachine.Namespace,
+		Name:      cluster.Spec.InfrastructureRef.Name,
+	}
+
+	if err := r.Client.Get(ctx, objectKey, jujuCluster); err != nil {
+		if apierrors.IsNotFound(err) {
+			log.Info("Waiting for JujuCluster to be found")
+			return ctrl.Result{Requeue: true}, nil
+		}
+		log.Error(err, "failed to get JujuCluster")
+		return ctrl.Result{}, err
+	}
+
+	// Check if juju config map has been created yet
+	jujuConfigMap := &kcore.ConfigMap{}
+	objectKey = client.ObjectKey{
+		Namespace: jujuCluster.Namespace,
+		Name:      jujuCluster.Name + "-juju-controller-config",
+	}
+	if err := r.Get(ctx, objectKey, jujuConfigMap); err != nil {
+		if apierrors.IsNotFound(err) {
+			log.Info("Waiting for juju controller config map to be found")
+			return ctrl.Result{Requeue: true}, nil
+		} else {
+			return ctrl.Result{}, err
+		}
+	}
+
+	// Connect juju API to controller
+	// https://github.com/juju/juju/blob/d5d762b6053b60ab20b4709c0c3dbfb3deb1d1f4/api/connector.go#L22
+	connector, err := connector.NewSimple(connector.SimpleConfig{
+		ControllerAddresses: strings.Split(jujuConfigMap.Data["api_endpoints"], ","),
+		CACert:              jujuConfigMap.Data["ca_cert"],
+		Username:            jujuConfigMap.Data["user"],
+		Password:            jujuConfigMap.Data["password"],
+	})
+
+	if err != nil {
+		log.Error(err, "failed to create simple connector")
+		return ctrl.Result{}, err
+	}
+
+	jujuAPI, err := juju.NewJujuAPi(connector)
+	if err != nil {
+		log.Error(err, "failed to create juju API")
+		return ctrl.Result{}, err
+	}
+
+	log.Info("Connected Juju API to controller")
+	machineExists, err := jujuAPI.MachineExistsInModel(jujuMachine.Name, jujuCluster.Name)
+	if err != nil {
+		log.Error(err, "failed to query existing machines")
+		return ctrl.Result{}, err
+	}
+	if !machineExists {
+		log.Info("Machine not found, creating it now")
+	}
+
+	log.Info("Stopping reconciliation")
 	return ctrl.Result{}, nil
 }
 

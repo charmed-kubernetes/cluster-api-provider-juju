@@ -40,6 +40,9 @@ type JujuClusterSpec struct {
 type JujuClusterStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
+	// Ready denotes that the maas cluster (infrastructure) is ready.
+	//+kubebuilder:default=false
+	Ready bool `json:"ready"`
 }
 
 //+kubebuilder:object:root=true

@@ -42,6 +42,16 @@ spec:
             type: object
           status:
             description: JujuClusterStatus defines the observed state of JujuCluster
+            properties:
+              ready:
+                default: false
+                description: 'INSERT ADDITIONAL STATUS FIELD - define observed state
+                  of cluster Important: Run "make" to regenerate code after modifying
+                  this file Ready denotes that the maas cluster (infrastructure) is
+                  ready.'
+                type: boolean
+            required:
+            - ready
             type: object
         type: object
     served: true
