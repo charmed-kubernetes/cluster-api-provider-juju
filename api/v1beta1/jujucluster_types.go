@@ -32,8 +32,8 @@ type JujuClusterSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
-	// Foo is an example field of JujuCluster. Edit jujucluster_types.go to remove/update
-	Foo string `json:"foo,omitempty"`
+	//+kubebuilder:default="cluster"
+	ControllerServiceType string `json:"controllerServiceType"`
 }
 
 // JujuClusterStatus defines the observed state of JujuCluster

@@ -35,10 +35,11 @@ spec:
           spec:
             description: JujuClusterSpec defines the desired state of JujuCluster
             properties:
-              foo:
-                description: Foo is an example field of JujuCluster. Edit jujucluster_types.go
-                  to remove/update
+              controllerServiceType:
+                default: cluster
                 type: string
+            required:
+            - controllerServiceType
             type: object
           status:
             description: JujuClusterStatus defines the observed state of JujuCluster

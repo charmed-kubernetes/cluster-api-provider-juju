@@ -22,6 +22,10 @@ import (
 
 	"github.com/charmed-kubernetes/cluster-api-provider-juju/juju"
 	"github.com/juju/juju/api/connector"
+	"github.com/juju/juju/core/constraints"
+	"github.com/juju/juju/core/instance"
+	"github.com/juju/juju/core/model"
+	"github.com/juju/juju/rpc/params"
 	kcore "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -127,8 +131,10 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	// Connect juju API to controller
+	// Note this is what Juju calls a controller only connection, only a subnet of the API is available
+	// To use the full API you need to specify a model UUID as well
 	// https://github.com/juju/juju/blob/d5d762b6053b60ab20b4709c0c3dbfb3deb1d1f4/api/connector.go#L22
-	connector, err := connector.NewSimple(connector.SimpleConfig{
+	controllerConnector, err := connector.NewSimple(connector.SimpleConfig{
 		ControllerAddresses: strings.Split(jujuConfigMap.Data["api_endpoints"], ","),
 		CACert:              jujuConfigMap.Data["ca_cert"],
 		Username:            jujuConfigMap.Data["user"],
@@ -140,20 +146,56 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
-	jujuAPI, err := juju.NewJujuAPi(connector)
+	controllerAPI, err := juju.NewJujuAPi(controllerConnector)
 	if err != nil {
 		log.Error(err, "failed to create juju API")
 		return ctrl.Result{}, err
 	}
 
-	log.Info("Connected Juju API to controller")
-	machineExists, err := jujuAPI.MachineExistsInModel(jujuMachine.Name, jujuCluster.Name)
+	modelUUID, err := controllerAPI.GetModelUUID(jujuCluster.Name)
+	if err != nil {
+		log.Error(err, "failed to retrieve modelUUID")
+	}
+
+	// Now that we have the model UUID, we need to make a new api connection including the model UUID
+	modelConnector, err := connector.NewSimple(connector.SimpleConfig{
+		ControllerAddresses: strings.Split(jujuConfigMap.Data["api_endpoints"], ","),
+		CACert:              jujuConfigMap.Data["ca_cert"],
+		Username:            jujuConfigMap.Data["user"],
+		Password:            jujuConfigMap.Data["password"],
+		ModelUUID:           modelUUID,
+	})
+
+	modelAPI, err := juju.NewJujuAPi(modelConnector)
+	if err != nil {
+		log.Error(err, "failed to create juju API")
+		return ctrl.Result{}, err
+	}
+
+	log.Info("Connected Juju API to controller and model")
+	machineExists, err := controllerAPI.MachineExistsInModel(jujuMachine.Name, jujuCluster.Name)
 	if err != nil {
 		log.Error(err, "failed to query existing machines")
 		return ctrl.Result{}, err
 	}
 	if !machineExists {
 		log.Info("Machine not found, creating it now")
+		machineParams := params.AddMachineParams{
+			InstanceId:  instance.Id(jujuMachine.Name),
+			Nonce:       jujuMachine.Name,
+			Jobs:        []model.MachineJob{model.JobHostUnits},
+			Constraints: constraints.Value{},
+		}
+		result, err := modelAPI.AddMachine(machineParams)
+		if err != nil {
+			log.Error(err, "error adding machine")
+			return ctrl.Result{}, err
+		}
+		if result.Error != nil {
+			log.Error(err, "add machine result contains error")
+			return ctrl.Result{}, result.Error
+		}
+		log.Info("machine added", "result", result)
 	}
 
 	log.Info("Stopping reconciliation")

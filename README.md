@@ -105,7 +105,7 @@ You should see output similar to the following:
 8. Create a secret containing your cloud credential data:
 The cluster controller needs cloud credential information in order to create models and machines via juju. It expects the secret to be named with the format `<your-juju-cluster-name>-cloud-secret` and be created in the namespace you are going to create your cluster in. The command below will create a secret that should work with the sample resources that will be created in step 7.
 ```sh
-kubectl create secret generic jujucluster-sample-cloud-secret --from-literal=username='your-username' --from-literal=password='your-passworld' --from-literal=vmfolder='your-vm-folder' -n default
+kubectl create secret generic jujucluster-sample-cloud-secret --from-literal=username='your-username' --from-literal=password='your-password' --from-literal=vmfolder='your-vm-folder' -n default
 ```
 
 7. Create the sample cluster resources:

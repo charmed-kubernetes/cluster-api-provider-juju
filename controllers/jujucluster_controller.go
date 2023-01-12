@@ -347,10 +347,10 @@ func (r *JujuClusterReconciler) createJujuControllerResources(ctx context.Contex
 		"./kubectl config set-context context --cluster=cluster --user=user;"+
 		"./kubectl config use-context context;"+
 		"./juju add-k8s --client %s;"+
-		"./juju bootstrap %s;"+
+		"./juju bootstrap %s --config controller-service-type=%s;"+
 		"./juju add-user capi-juju;"+
 		"./juju grant capi-juju superuser;"+
-		"./juju show-controller --show-password", cloudName, cloudName)
+		"./juju show-controller --show-password", cloudName, cloudName, jujuCluster.Spec.ControllerServiceType)
 	job := &kbatch.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Labels:      make(map[string]string),
