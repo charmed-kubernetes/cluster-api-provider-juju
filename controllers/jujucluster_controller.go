@@ -104,7 +104,7 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			log.Info("Waiting for cluster owner to be found")
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{}, nil
 		}
 		log.Error(err, "failed to get owner Cluster")
 		return ctrl.Result{}, err
@@ -112,7 +112,7 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	if cluster == nil {
 		log.Info("Waiting for cluster owner to be non-nil")
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{}, nil
 	}
 
 	// examine DeletionTimestamp to determine if object is under deletion
@@ -173,7 +173,7 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				return ctrl.Result{}, err
 			}
 			// Give it some time to create the job
-			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+			return ctrl.Result{RequeueAfter: 20 * time.Second}, nil
 		} else {
 			return ctrl.Result{}, err
 		}
@@ -293,14 +293,16 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 	}
 
-	helper, err := patch.NewHelper(jujuCluster, r.Client)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	log.Info("Patching cluster ready status to true")
-	jujuCluster.Status.Ready = true
-	if err := helper.Patch(ctx, jujuCluster); err != nil {
-		return ctrl.Result{}, errors.Wrapf(err, "couldn't patch cluster %q", jujuCluster.Name)
+	if !jujuCluster.Status.Ready {
+		helper, err := patch.NewHelper(jujuCluster, r.Client)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		log.Info("Patching cluster ready status to true")
+		jujuCluster.Status.Ready = true
+		if err := helper.Patch(ctx, jujuCluster); err != nil {
+			return ctrl.Result{}, errors.Wrapf(err, "couldn't patch cluster %q", jujuCluster.Name)
+		}
 	}
 
 	log.Info("Stopping reconciliation")
@@ -587,6 +589,17 @@ func (r *JujuClusterReconciler) createJujuConfigMap(ctx context.Context, cluster
 func (r *JujuClusterReconciler) createModel(ctx context.Context, cluster *clusterv1.Cluster, jujuCluster *infrastructurev1beta1.JujuCluster, jujuAPI juju.JujuAPI) error {
 	_ = log.FromContext(ctx)
 	config := make(map[string]interface{})
+	config["juju-http-proxy"] = "http://squid.internal:3128"
+	config["apt-http-proxy"] = "http://squid.internal:3128"
+	config["snap-http-proxy"] = "http://squid.internal:3128"
+	config["juju-https-proxy"] = "http://squid.internal:3128"
+	config["apt-https-proxy"] = "http://squid.internal:3128"
+	config["snap-https-proxy"] = "http://squid.internal:3128"
+	config["apt-no-proxy"] = "localhost,127.0.0.1,ppa.launchpad.net,launchpad.net"
+	config["juju-no-proxy"] = "localhost,127.0.0.1,0.0.0.0,ppa.launchpad.net,launchpad.net,10.0.8.0/24,10.246.154.0/24"
+	config["logging-config"] = "<root>=DEBUG"
+	config["datastore"] = "vsanDatastore"
+	config["primary-network"] = "VLAN_2764"
 	input := juju.CreateModelInput{
 		Name:           jujuCluster.Name,
 		Cloud:          "capi-vsphere",

@@ -74,7 +74,7 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			log.Info("Waiting for machine owner to be found")
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{}, nil
 		}
 		log.Error(err, "failed to get Owner Machine")
 		return ctrl.Result{}, err
@@ -82,7 +82,7 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	if machine == nil {
 		log.Info("Waiting for machine owner to be non-nil")
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{}, nil
 	}
 
 	// Fetch the Cluster.
@@ -140,7 +140,6 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		Username:            jujuConfigMap.Data["user"],
 		Password:            jujuConfigMap.Data["password"],
 	})
-
 	if err != nil {
 		log.Error(err, "failed to create simple connector")
 		return ctrl.Result{}, err
@@ -165,6 +164,10 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		Password:            jujuConfigMap.Data["password"],
 		ModelUUID:           modelUUID,
 	})
+	if err != nil {
+		log.Error(err, "failed to create simple connector")
+		return ctrl.Result{}, err
+	}
 
 	modelAPI, err := juju.NewJujuAPi(modelConnector)
 	if err != nil {
@@ -180,11 +183,15 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 	if !machineExists {
 		log.Info("Machine not found, creating it now")
+		cons, err := constraints.Parse("cores=2", "mem=8G", "root-disk=16G")
+		if err != nil {
+			log.Error(err, "error creating machine constraints")
+		}
 		machineParams := params.AddMachineParams{
 			InstanceId:  instance.Id(jujuMachine.Name),
 			Nonce:       jujuMachine.Name,
 			Jobs:        []model.MachineJob{model.JobHostUnits},
-			Constraints: constraints.Value{},
+			Constraints: cons,
 		}
 		result, err := modelAPI.AddMachine(machineParams)
 		if err != nil {
