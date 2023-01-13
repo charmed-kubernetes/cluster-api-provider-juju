@@ -23,7 +23,6 @@ import (
 	"github.com/charmed-kubernetes/cluster-api-provider-juju/juju"
 	"github.com/juju/juju/api/connector"
 	"github.com/juju/juju/core/constraints"
-	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/rpc/params"
 	kcore "k8s.io/api/core/v1"
@@ -188,8 +187,6 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			log.Error(err, "error creating machine constraints")
 		}
 		machineParams := params.AddMachineParams{
-			InstanceId:  instance.Id(jujuMachine.Name),
-			Nonce:       jujuMachine.Name,
 			Jobs:        []model.MachineJob{model.JobHostUnits},
 			Constraints: cons,
 		}
