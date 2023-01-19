@@ -32,14 +32,18 @@ type JujuClusterSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
-	// Foo is an example field of JujuCluster. Edit jujucluster_types.go to remove/update
-	Foo string `json:"foo,omitempty"`
+	//+kubebuilder:default="cluster"
+	ControllerServiceType string `json:"controllerServiceType"`
+	Endpoint              string `json:"endpoint"`
 }
 
 // JujuClusterStatus defines the observed state of JujuCluster
 type JujuClusterStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
+	// Ready denotes that the maas cluster (infrastructure) is ready.
+	//+kubebuilder:default=false
+	Ready bool `json:"ready"`
 }
 
 //+kubebuilder:object:root=true

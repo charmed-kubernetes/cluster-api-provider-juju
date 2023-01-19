@@ -17,23 +17,50 @@ limitations under the License.
 package controllers
 
 import (
+	"bytes"
 	"context"
+	"flag"
 	"fmt"
+	"io"
+	"strings"
+	"time"
 
 	infrastructurev1beta1 "github.com/charmed-kubernetes/cluster-api-provider-juju/api/v1beta1"
+	"github.com/charmed-kubernetes/cluster-api-provider-juju/juju"
+	"github.com/juju/juju/api/connector"
+	"github.com/juju/juju/cloud"
+	"github.com/juju/juju/core/constraints"
+	"github.com/pkg/errors"
+	"gopkg.in/yaml.v3"
 	kbatch "k8s.io/api/batch/v1"
 	kcore "k8s.io/api/core/v1"
 	krbac "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	"sigs.k8s.io/cluster-api/util"
+	"sigs.k8s.io/cluster-api/util/patch"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
+
+// JujuConfig is used for parsing necessary config values from juju-client output
+type JujuConfig struct {
+	Details struct {
+		APIEndpoints []string `yaml:"api-endpoints"`
+		CACert       string   `yaml:"ca-cert"`
+	}
+	Account struct {
+		User     string `yaml:"user"`
+		Password string `yaml:"password"`
+	}
+}
 
 // JujuClusterReconciler reconciles a JujuCluster object
 type JujuClusterReconciler struct {
@@ -48,6 +75,8 @@ type JujuClusterReconciler struct {
 //+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -74,7 +103,7 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	cluster, err := util.GetOwnerCluster(ctx, r.Client, jujuCluster.ObjectMeta)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			// Could not find the owner yet, this is not an error and will rereconcile when the owner gets set.
+			log.Info("Waiting for cluster owner to be found")
 			return ctrl.Result{}, nil
 		}
 		log.Error(err, "failed to get owner Cluster")
@@ -82,13 +111,28 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	if cluster == nil {
-		log.Info("Cluster owner was nil")
+		log.Info("Waiting for cluster owner to be non-nil")
 		return ctrl.Result{}, nil
+	}
+
+	// Check if a secret containing cloud user data has been created yet
+	cloudSecret := &kcore.Secret{}
+	objectKey := client.ObjectKey{
+		Namespace: jujuCluster.Namespace,
+		Name:      jujuCluster.Name + "-cloud-secret",
+	}
+	if err := r.Get(ctx, objectKey, cloudSecret); err != nil {
+		if apierrors.IsNotFound(err) {
+			log.Info(fmt.Sprintf("secret %s not found in namespace %s, please create it", jujuCluster.Name+"-cloud-secret", jujuCluster.Namespace))
+			return ctrl.Result{Requeue: true}, nil
+		} else {
+			return ctrl.Result{}, err
+		}
 	}
 
 	// Check if a juju controller has been created yet via the job
 	job := &kbatch.Job{}
-	objectKey := client.ObjectKey{
+	objectKey = client.ObjectKey{
 		Namespace: jujuCluster.Namespace,
 		Name:      jujuCluster.Name + "-juju-controller-bootstrap",
 	}
@@ -98,7 +142,8 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			if err := r.createJujuControllerResources(ctx, cluster, jujuCluster); err != nil {
 				return ctrl.Result{}, err
 			}
-			return ctrl.Result{Requeue: true}, nil
+			// Give it some time to create the job
+			return ctrl.Result{RequeueAfter: 20 * time.Second}, nil
 		} else {
 			return ctrl.Result{}, err
 		}
@@ -111,6 +156,46 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	} else {
 		log.Info("bootstrap job completed")
 	}
+
+	// Check if juju config map has been created yet
+	jujuConfigMap := &kcore.ConfigMap{}
+	objectKey = client.ObjectKey{
+		Namespace: jujuCluster.Namespace,
+		Name:      jujuCluster.Name + "-juju-controller-config",
+	}
+	if err := r.Get(ctx, objectKey, jujuConfigMap); err != nil {
+		if apierrors.IsNotFound(err) {
+			log.Info("juju controller config not found, creating it now")
+			if err := r.createJujuConfigMap(ctx, cluster, jujuCluster); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{Requeue: true}, nil
+		} else {
+			return ctrl.Result{}, err
+		}
+	}
+
+	// Connect juju API to controller
+	// https://github.com/juju/juju/blob/d5d762b6053b60ab20b4709c0c3dbfb3deb1d1f4/api/connector.go#L22
+	connector, err := connector.NewSimple(connector.SimpleConfig{
+		ControllerAddresses: strings.Split(jujuConfigMap.Data["api_endpoints"], ","),
+		CACert:              jujuConfigMap.Data["ca_cert"],
+		Username:            jujuConfigMap.Data["user"],
+		Password:            jujuConfigMap.Data["password"],
+	})
+
+	if err != nil {
+		log.Error(err, "failed to create simple connector")
+		return ctrl.Result{}, err
+	}
+
+	jujuAPI, err := juju.NewJujuAPi(connector)
+	if err != nil {
+		log.Error(err, "failed to create juju API")
+		return ctrl.Result{}, err
+	}
+
+	log.Info("Connected Juju API to controller")
 
 	// examine DeletionTimestamp to determine if object is under deletion
 	if jujuCluster.ObjectMeta.DeletionTimestamp.IsZero() {
@@ -127,6 +212,17 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		// The object is being deleted
 		if controllerutil.ContainsFinalizer(jujuCluster, infrastructurev1beta1.JujuClusterFinalizer) {
 			// our finalizer is present, so lets handle controller resource deletion
+			modelUUID, err := jujuAPI.GetModelUUID(jujuCluster.Name)
+			if err != nil {
+				log.Error(err, "failed to retrieve modelUUID when attempting to destroy model")
+				return ctrl.Result{}, err
+			}
+			log.Info("deleting model")
+			if err := jujuAPI.DestroyModel(modelUUID); err != nil {
+				return ctrl.Result{}, err
+			}
+
+			log.Info("deleting juju controller resources")
 			if err := r.deleteJujuControllerResources(ctx, cluster, jujuCluster); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -139,9 +235,95 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 
 		// Stop reconciliation as the item is being deleted
+		err = jujuAPI.CloseConnections()
+		if err != nil {
+			return ctrl.Result{}, err
+		}
 		return ctrl.Result{}, nil
 	}
 
+	cloudExists, err := jujuAPI.CloudExists("capi-vsphere")
+	if err != nil {
+		log.Error(err, "failed to query existing clouds")
+		return ctrl.Result{}, err
+	}
+
+	if !cloudExists {
+		log.Info("cloud not found, creating it now")
+		vsphereRegion := cloud.Region{
+			Name:     "Boston",
+			Endpoint: jujuCluster.Spec.Endpoint,
+		}
+
+		vsphereCloud := cloud.Cloud{
+			Name:      "capi-vsphere",
+			Type:      "vsphere",
+			Endpoint:  jujuCluster.Spec.Endpoint,
+			Regions:   []cloud.Region{vsphereRegion},
+			AuthTypes: []cloud.AuthType{"userpass"},
+		}
+
+		err = jujuAPI.AddCloud(vsphereCloud, true)
+		if err != nil {
+			log.Error(err, "failed to add cloud")
+			return ctrl.Result{}, err
+		}
+	}
+
+	// Check if credential has been created yet
+	credentialExists, err := jujuAPI.CredentialExists("capi-vsphere", "capi-vsphere")
+	if err != nil {
+		log.Error(err, "failed to query existing credentials")
+		return ctrl.Result{}, err
+	}
+	if !credentialExists {
+		log.Info("credential not found, creating it now")
+		username := string(cloudSecret.Data["username"][:])
+		password := string(cloudSecret.Data["password"][:])
+		vmfolder := string(cloudSecret.Data["vmfolder"][:])
+		credential := cloud.NewCredential("userpass", map[string]string{
+			"user":     username,
+			"password": password,
+			"vmfolder": vmfolder,
+		})
+		err = jujuAPI.AddCredential(credential, "capi-vsphere", "capi-vsphere")
+		if err != nil {
+			log.Error(err, "failed to add credential")
+			return ctrl.Result{}, err
+		}
+	}
+
+	// Check if model has been created yet
+	modelExists, err := jujuAPI.ModelExists(jujuCluster.Name)
+	if err != nil {
+		log.Error(err, "failed to query existing models")
+		return ctrl.Result{}, err
+	}
+	if !modelExists {
+		log.Info("model not found, creating it now")
+		err = r.createModel(ctx, cluster, jujuCluster, *jujuAPI)
+		if err != nil {
+			log.Error(err, "Error creating model")
+			return ctrl.Result{}, err
+		}
+	}
+
+	if !jujuCluster.Status.Ready {
+		helper, err := patch.NewHelper(jujuCluster, r.Client)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		log.Info("Patching cluster ready status to true")
+		jujuCluster.Status.Ready = true
+		if err := helper.Patch(ctx, jujuCluster); err != nil {
+			return ctrl.Result{}, errors.Wrapf(err, "couldn't patch cluster %q", jujuCluster.Name)
+		}
+	}
+	err = jujuAPI.CloseConnections()
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	log.Info("Stopping reconciliation")
 	return ctrl.Result{}, nil
 }
 
@@ -184,10 +366,11 @@ func (r *JujuClusterReconciler) createJujuControllerResources(ctx context.Contex
 		"./kubectl config set-credentials user --token=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token);"+
 		"./kubectl config set-context context --cluster=cluster --user=user;"+
 		"./kubectl config use-context context;"+
-		"./juju version;"+
 		"./juju add-k8s --client %s;"+
-		"./juju clouds;"+
-		"./juju bootstrap %s", cloudName, cloudName)
+		"./juju bootstrap %s --config controller-service-type=%s;"+
+		"./juju add-user capi-juju;"+
+		"./juju grant capi-juju superuser;"+
+		"./juju show-controller --show-password", cloudName, cloudName, jujuCluster.Spec.ControllerServiceType)
 	job := &kbatch.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Labels:      make(map[string]string),
@@ -227,7 +410,7 @@ func (r *JujuClusterReconciler) createJujuControllerResources(ctx context.Contex
 	log.Info("Creating resources necessary for bootstrapping juju controller")
 	for _, obj := range objects {
 		if err := r.Create(ctx, obj); err != nil {
-			log.Error(err, "failed to create object", "kind", obj.GetObjectKind().GroupVersionKind().Kind)
+			log.Error(err, "failed to create object")
 			return err
 		}
 	}
@@ -306,6 +489,150 @@ func (r *JujuClusterReconciler) deleteJujuControllerResources(ctx context.Contex
 			}
 		}
 	}
+
+	return nil
+}
+
+func (r *JujuClusterReconciler) getClientLogs(ctx context.Context, cluster *clusterv1.Cluster, jujuCluster *infrastructurev1beta1.JujuCluster) (string, error) {
+	log := log.FromContext(ctx)
+
+	// N.B controller runtime client does not support getting subresources like logs from pods
+	// have to use client-go
+
+	// Try using the in-cluster config,
+	// if theres an error (such as when running outside the cluster), fall back to kubeconfig
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		kubeconfig := (*flag.Lookup("kubeconfig")).Value.(flag.Getter).Get().(string)
+		// use the current context in kubeconfig
+		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
+		if err != nil {
+			panic(err.Error())
+		}
+	}
+
+	// creates the clientset
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		panic(err.Error())
+	}
+
+	job, err := clientset.BatchV1().Jobs(jujuCluster.Namespace).Get(context.TODO(), jujuCluster.Name+"-juju-controller-bootstrap", metav1.GetOptions{})
+	if err != nil {
+		log.Error(err, fmt.Sprintf("error getting job %s in namespace %s", jujuCluster.Name+"-juju-controller-bootstrap", jujuCluster.Namespace))
+		return "", err
+	}
+
+	pods, err := clientset.CoreV1().Pods(jujuCluster.Namespace).List(context.TODO(), metav1.ListOptions{LabelSelector: metav1.FormatLabelSelector(job.Spec.Selector)})
+	if err != nil {
+		log.Error(err, fmt.Sprintf("error listing pods %s in namespace", jujuCluster.Namespace))
+		return "", err
+	}
+
+	logs := ""
+	for _, pod := range pods.Items {
+		req := clientset.CoreV1().Pods(jujuCluster.Namespace).GetLogs(pod.Name, &kcore.PodLogOptions{})
+		podLogs, err := req.Stream(ctx)
+		if err != nil {
+			log.Error(err, "error opening stream")
+			return "", err
+		}
+		defer podLogs.Close()
+		buf := new(bytes.Buffer)
+		_, err = io.Copy(buf, podLogs)
+		if err != nil {
+			log.Error(err, "error in copying information from logs to buffer")
+			return "", err
+		}
+
+		logs = logs + buf.String()
+	}
+
+	return logs, nil
+}
+
+func getJujuConfigFromLogs(ctx context.Context, logs string, cloud string) (JujuConfig, error) {
+	log := log.FromContext(ctx)
+
+	split := strings.Split(logs, fmt.Sprintf("%s:\n", cloud))
+	yam := split[1]
+	config := JujuConfig{}
+	err := yaml.Unmarshal([]byte(yam), &config)
+	if err != nil {
+		log.Error(err, "error unmarshalling YAML data into config struct")
+		return JujuConfig{}, err
+	}
+
+	return config, nil
+
+}
+
+func (r *JujuClusterReconciler) createJujuConfigMap(ctx context.Context, cluster *clusterv1.Cluster, jujuCluster *infrastructurev1beta1.JujuCluster) error {
+	log := log.FromContext(ctx)
+
+	logs, err := r.getClientLogs(ctx, cluster, jujuCluster)
+	if err != nil {
+		log.Error(err, "error getting juju client pod logs")
+		return err
+	}
+
+	jujuConfig, err := getJujuConfigFromLogs(ctx, logs, jujuCluster.Name+"-k8s-cloud")
+	if err != nil {
+		log.Error(err, "error getting juju config from client pod logs")
+		return err
+	}
+
+	jujuConfigMap := &kcore.ConfigMap{}
+	jujuConfigMap.Name = jujuCluster.Name + "-juju-controller-config"
+	jujuConfigMap.Namespace = jujuCluster.Namespace
+	jujuConfigMap.Data = make(map[string]string)
+	jujuConfigMap.Data["api_endpoints"] = strings.Join(jujuConfig.Details.APIEndpoints[:], ",")
+	jujuConfigMap.Data["ca_cert"] = jujuConfig.Details.CACert
+	jujuConfigMap.Data["user"] = jujuConfig.Account.User
+	jujuConfigMap.Data["password"] = jujuConfig.Account.Password
+
+	if err := controllerutil.SetControllerReference(jujuCluster, jujuConfigMap, r.Scheme); err != nil {
+		log.Error(err, "failed to set controller reference on config map")
+		return err
+	}
+
+	if err := r.Create(ctx, jujuConfigMap); err != nil {
+		log.Error(err, "failed to create juju controller config map")
+		return err
+	}
+
+	return nil
+}
+
+func (r *JujuClusterReconciler) createModel(ctx context.Context, cluster *clusterv1.Cluster, jujuCluster *infrastructurev1beta1.JujuCluster, jujuAPI juju.JujuAPI) error {
+	_ = log.FromContext(ctx)
+	config := make(map[string]interface{})
+	config["juju-http-proxy"] = "http://squid.internal:3128"
+	config["apt-http-proxy"] = "http://squid.internal:3128"
+	config["snap-http-proxy"] = "http://squid.internal:3128"
+	config["juju-https-proxy"] = "http://squid.internal:3128"
+	config["apt-https-proxy"] = "http://squid.internal:3128"
+	config["snap-https-proxy"] = "http://squid.internal:3128"
+	config["apt-no-proxy"] = "localhost,127.0.0.1,ppa.launchpad.net,launchpad.net"
+	config["juju-no-proxy"] = "localhost,127.0.0.1,0.0.0.0,ppa.launchpad.net,launchpad.net,10.0.8.0/24,10.246.154.0/24"
+	config["logging-config"] = "<root>=DEBUG"
+	config["datastore"] = "vsanDatastore"
+	config["primary-network"] = "VLAN_2764"
+	input := juju.CreateModelInput{
+		Name:           jujuCluster.Name,
+		Cloud:          "capi-vsphere",
+		CloudRegion:    "Boston",
+		CredentialName: "capi-vsphere",
+		Config:         config,
+		Constraints:    constraints.Value{},
+	}
+
+	response, err := jujuAPI.CreateModel(input)
+	if err != nil {
+		return err
+	}
+
+	log.Log.Info("Created model", "response", response)
 
 	return nil
 }

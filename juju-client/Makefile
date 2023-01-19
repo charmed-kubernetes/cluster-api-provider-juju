@@ -7,8 +7,8 @@ IMG_TAG ?= latest
 # Image URL to use all building/pushing image targets (note the inclusion of upload)
 IMG ?= $(REGISTRY)$(IMG_PATH)$(IMG_NAME):$(IMG_TAG)
 
-JUJU_MAJOR ?= 2.9
-JUJU_MINOR ?= 37
+JUJU_MAJOR ?= 3.0
+JUJU_MINOR ?= 2
 
 KUBECTL_VERSION ?= 1.26.0
 
