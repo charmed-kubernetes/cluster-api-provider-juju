@@ -131,7 +131,7 @@ kubectl get svc -n controller-jujucluster-sample-k8s-cloud
 sshuttle -r ubuntu@<control-plane-IP> <svc-IP> --ssh-cmd 'ssh -i ~/.local/share/juju/ssh/juju_id_rsa'
 ```
 
-Note that the first IP after the `@` is the IP of the Kubernetes-Control-Plane application as shown by running `juju status`. The second IP should be the IP of the controller service obtained above. 
+Note that the first IP after the `@` is the IP of the Kubernetes-Control-Plane application as shown by running `juju status`. The second IP should be the cluster IP of the controller service obtained above. 
 
 3. Add the controller using the registration string:
 
