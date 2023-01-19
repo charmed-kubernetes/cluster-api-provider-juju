@@ -167,6 +167,23 @@ func (jujuAPI *JujuAPI) CreateModel(input CreateModelInput) (*CreateModelRespons
 	return &CreateModelResponse{ModelInfo: modelInfo}, nil
 }
 
+func (jujuAPI *JujuAPI) DestroyModel(uuid string) error {
+	maxWait := 10 * time.Minute
+	timeout := 30 * time.Minute
+
+	tag := names.NewModelTag(uuid)
+
+	destroyStorage := true
+	forceDestroy := false
+
+	err := jujuAPI.modelClient.DestroyModel(tag, &destroyStorage, &forceDestroy, &maxWait, timeout)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (jujuAPI *JujuAPI) AddCredential(credential jujuCloud.Credential, credentialName string, cloudName string) error {
 	user := jujuAPI.GetCurrentUser(jujuAPI.Connection)
 	id := fmt.Sprintf("%s/%s/%s", cloudName, user, credentialName)
@@ -218,16 +235,38 @@ func (jujuAPI *JujuAPI) DestroyMachine(force, keep, dryRun bool, maxWait *time.D
 	return results[0], nil
 }
 
-func (jujuAPI *JujuAPI) MachineExistsInModel(machineID string, modelName string) (bool, error) {
+func (jujuAPI *JujuAPI) GetModelMachines(modelName string) ([]params.ModelMachineInfo, error) {
 	modelInfo, err := jujuAPI.GetModelInfo(modelName)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	machines := modelInfo.Machines
-	for _, machine := range machines {
-		if machine.Id == machineID {
-			return true, nil
-		}
+	return modelInfo.Machines, nil
+}
+
+func (jujuAPI *JujuAPI) CloseConnections() error {
+	err := jujuAPI.applicationClient.Close()
+	if err != nil {
+		return errors.Errorf("error closing application client: %s", err)
 	}
-	return false, nil
+	err = jujuAPI.modelClient.Close()
+	if err != nil {
+		return errors.Errorf("error closing model client: %s", err)
+	}
+	err = jujuAPI.userClient.Close()
+	if err != nil {
+		return errors.Errorf("error closing user client: %s", err)
+	}
+	err = jujuAPI.cloudClient.Close()
+	if err != nil {
+		return errors.Errorf("error closing cloud client: %s", err)
+	}
+	err = jujuAPI.modelConfigClient.Close()
+	if err != nil {
+		return errors.Errorf("error closing modelConfig client: %s", err)
+	}
+	err = jujuAPI.machineManagerClient.Close()
+	if err != nil {
+		return errors.Errorf("error closing machine manager client: %s", err)
+	}
+	return nil
 }

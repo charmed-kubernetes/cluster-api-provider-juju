@@ -34,6 +34,7 @@ type JujuClusterSpec struct {
 
 	//+kubebuilder:default="cluster"
 	ControllerServiceType string `json:"controllerServiceType"`
+	Endpoint              string `json:"endpoint"`
 }
 
 // JujuClusterStatus defines the observed state of JujuCluster

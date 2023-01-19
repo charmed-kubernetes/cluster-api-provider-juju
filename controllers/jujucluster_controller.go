@@ -115,36 +115,6 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, nil
 	}
 
-	// examine DeletionTimestamp to determine if object is under deletion
-	if jujuCluster.ObjectMeta.DeletionTimestamp.IsZero() {
-		// The object is not being deleted, so if it does not have our finalizer,
-		// then lets add the finalizer and update the object. This is equivalent
-		// registering our finalizer.
-		if !controllerutil.ContainsFinalizer(jujuCluster, infrastructurev1beta1.JujuClusterFinalizer) {
-			controllerutil.AddFinalizer(jujuCluster, infrastructurev1beta1.JujuClusterFinalizer)
-			if err := r.Update(ctx, jujuCluster); err != nil {
-				return ctrl.Result{}, err
-			}
-		}
-	} else {
-		// The object is being deleted
-		if controllerutil.ContainsFinalizer(jujuCluster, infrastructurev1beta1.JujuClusterFinalizer) {
-			// our finalizer is present, so lets handle controller resource deletion
-			if err := r.deleteJujuControllerResources(ctx, cluster, jujuCluster); err != nil {
-				return ctrl.Result{}, err
-			}
-
-			// remove our finalizer from the list and update it.
-			controllerutil.RemoveFinalizer(jujuCluster, infrastructurev1beta1.JujuClusterFinalizer)
-			if err := r.Update(ctx, jujuCluster); err != nil {
-				return ctrl.Result{}, err
-			}
-		}
-
-		// Stop reconciliation as the item is being deleted
-		return ctrl.Result{}, nil
-	}
-
 	// Check if a secret containing cloud user data has been created yet
 	cloudSecret := &kcore.Secret{}
 	objectKey := client.ObjectKey{
@@ -227,6 +197,51 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	log.Info("Connected Juju API to controller")
 
+	// examine DeletionTimestamp to determine if object is under deletion
+	if jujuCluster.ObjectMeta.DeletionTimestamp.IsZero() {
+		// The object is not being deleted, so if it does not have our finalizer,
+		// then lets add the finalizer and update the object. This is equivalent
+		// registering our finalizer.
+		if !controllerutil.ContainsFinalizer(jujuCluster, infrastructurev1beta1.JujuClusterFinalizer) {
+			controllerutil.AddFinalizer(jujuCluster, infrastructurev1beta1.JujuClusterFinalizer)
+			if err := r.Update(ctx, jujuCluster); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+	} else {
+		// The object is being deleted
+		if controllerutil.ContainsFinalizer(jujuCluster, infrastructurev1beta1.JujuClusterFinalizer) {
+			// our finalizer is present, so lets handle controller resource deletion
+			modelUUID, err := jujuAPI.GetModelUUID(jujuCluster.Name)
+			if err != nil {
+				log.Error(err, "failed to retrieve modelUUID when attempting to destroy model")
+				return ctrl.Result{}, err
+			}
+			log.Info("deleting model")
+			if err := jujuAPI.DestroyModel(modelUUID); err != nil {
+				return ctrl.Result{}, err
+			}
+
+			log.Info("deleting juju controller resources")
+			if err := r.deleteJujuControllerResources(ctx, cluster, jujuCluster); err != nil {
+				return ctrl.Result{}, err
+			}
+
+			// remove our finalizer from the list and update it.
+			controllerutil.RemoveFinalizer(jujuCluster, infrastructurev1beta1.JujuClusterFinalizer)
+			if err := r.Update(ctx, jujuCluster); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+
+		// Stop reconciliation as the item is being deleted
+		err = jujuAPI.CloseConnections()
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
+
 	cloudExists, err := jujuAPI.CloudExists("capi-vsphere")
 	if err != nil {
 		log.Error(err, "failed to query existing clouds")
@@ -237,13 +252,13 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		log.Info("cloud not found, creating it now")
 		vsphereRegion := cloud.Region{
 			Name:     "Boston",
-			Endpoint: "10.246.152.100",
+			Endpoint: jujuCluster.Spec.Endpoint,
 		}
 
 		vsphereCloud := cloud.Cloud{
 			Name:      "capi-vsphere",
 			Type:      "vsphere",
-			Endpoint:  "10.246.152.100",
+			Endpoint:  jujuCluster.Spec.Endpoint,
 			Regions:   []cloud.Region{vsphereRegion},
 			AuthTypes: []cloud.AuthType{"userpass"},
 		}
@@ -304,7 +319,10 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			return ctrl.Result{}, errors.Wrapf(err, "couldn't patch cluster %q", jujuCluster.Name)
 		}
 	}
-
+	err = jujuAPI.CloseConnections()
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 	log.Info("Stopping reconciliation")
 	return ctrl.Result{}, nil
 }

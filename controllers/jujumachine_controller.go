@@ -18,7 +18,9 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmed-kubernetes/cluster-api-provider-juju/juju"
 	"github.com/juju/juju/api/connector"
@@ -31,6 +33,7 @@ import (
 	"sigs.k8s.io/cluster-api/util"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	infrastructurev1beta1 "github.com/charmed-kubernetes/cluster-api-provider-juju/api/v1beta1"
@@ -59,15 +62,15 @@ type JujuMachineReconciler struct {
 func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
 
-	var jujuMachine infrastructurev1beta1.JujuMachine
-	if err := r.Get(ctx, req.NamespacedName, &jujuMachine); err != nil {
+	jujuMachine := &infrastructurev1beta1.JujuMachine{}
+	if err := r.Get(ctx, req.NamespacedName, jujuMachine); err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
 		log.Error(err, "failed to get JujuMachine")
 		return ctrl.Result{}, err
 	}
-	log.Info("Retrieved JujuMachine successfully")
+	log.Info("Retrieved JujuMachine successfully", "JujuMachine", jujuMachine)
 
 	machine, err := util.GetOwnerMachine(ctx, r.Client, jujuMachine.ObjectMeta)
 	if err != nil {
@@ -146,13 +149,14 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	controllerAPI, err := juju.NewJujuAPi(controllerConnector)
 	if err != nil {
-		log.Error(err, "failed to create juju API")
+		log.Error(err, "failed to create juju controller API")
 		return ctrl.Result{}, err
 	}
 
 	modelUUID, err := controllerAPI.GetModelUUID(jujuCluster.Name)
 	if err != nil {
 		log.Error(err, "failed to retrieve modelUUID")
+		return ctrl.Result{}, err
 	}
 
 	// Now that we have the model UUID, we need to make a new api connection including the model UUID
@@ -170,18 +174,95 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	modelAPI, err := juju.NewJujuAPi(modelConnector)
 	if err != nil {
-		log.Error(err, "failed to create juju API")
+		log.Error(err, "failed to create juju model API")
 		return ctrl.Result{}, err
 	}
 
 	log.Info("Connected Juju API to controller and model")
-	machineExists, err := controllerAPI.MachineExistsInModel(jujuMachine.Name, jujuCluster.Name)
-	if err != nil {
-		log.Error(err, "failed to query existing machines")
+
+	// examine DeletionTimestamp to determine if object is under deletion
+	if jujuMachine.ObjectMeta.DeletionTimestamp.IsZero() {
+		// The object is not being deleted, so if it does not have our finalizer,
+		// then lets add the finalizer and update the object. This is equivalent
+		// registering our finalizer.
+		if !controllerutil.ContainsFinalizer(jujuMachine, infrastructurev1beta1.JujuMachineFinalizer) {
+			// Refetch the resource before updating
+			jujuMachine := &infrastructurev1beta1.JujuMachine{}
+			if err := r.Get(ctx, req.NamespacedName, jujuMachine); err != nil {
+				if apierrors.IsNotFound(err) {
+					return ctrl.Result{}, nil
+				}
+				log.Error(err, "failed to get JujuMachine")
+				return ctrl.Result{}, err
+			}
+			log.Info("Refetched jujumachine before performing update for finalizer addition")
+			log.Info("Adding finalizer")
+			controllerutil.AddFinalizer(jujuMachine, infrastructurev1beta1.JujuMachineFinalizer)
+			if err := r.Update(ctx, jujuMachine); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+	} else {
+		// The object is being deleted
+		if controllerutil.ContainsFinalizer(jujuMachine, infrastructurev1beta1.JujuMachineFinalizer) {
+			// our finalizer is present, so lets handle controller resource deletion
+			log.Info("Finalizer present, handling deletion")
+			if jujuMachine.Spec.Machine != nil {
+				maxWait := 10 * time.Minute
+				machine := jujuMachine.Spec.Machine
+				log.Info(fmt.Sprintf("Destroying machine: %s", *machine))
+				result, err := modelAPI.DestroyMachine(false, false, false, &maxWait, *machine)
+				if err != nil {
+					log.Error(err, "Error destroying machine")
+					return ctrl.Result{}, err
+				}
+				if result.Error != nil {
+					log.Error(result.Error, "Result contained error")
+					return ctrl.Result{}, result.Error
+				}
+				log.Info("DestroyMachine complete", "result", result)
+			}
+
+			// remove our finalizer from the list and update it.
+			jujuMachine := &infrastructurev1beta1.JujuMachine{}
+			if err := r.Get(ctx, req.NamespacedName, jujuMachine); err != nil {
+				if apierrors.IsNotFound(err) {
+					return ctrl.Result{}, nil
+				}
+				log.Error(err, "failed to get JujuMachine")
+				return ctrl.Result{}, err
+			}
+			log.Info("Refetched jujumachine before updating for finalizer removal")
+			controllerutil.RemoveFinalizer(jujuMachine, infrastructurev1beta1.JujuMachineFinalizer)
+			if err := r.Update(ctx, jujuMachine); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+
+		err = controllerAPI.CloseConnections()
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+
+		err = modelAPI.CloseConnections()
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		// Stop reconciliation as the item is being deleted
+		return ctrl.Result{}, nil
+	}
+
+	jujuMachine = &infrastructurev1beta1.JujuMachine{}
+	if err := r.Get(ctx, req.NamespacedName, jujuMachine); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		log.Error(err, "failed to get JujuMachine")
 		return ctrl.Result{}, err
 	}
-	if !machineExists {
-		log.Info("Machine not found, creating it now")
+	log.Info("Refetched jujumachine before performing nil check")
+	if jujuMachine.Spec.Machine == nil {
+		log.Info("Machine field in spec was nil, requesting a machine now")
 		cons, err := constraints.Parse("cores=2", "mem=8G", "root-disk=16G")
 		if err != nil {
 			log.Error(err, "error creating machine constraints")
@@ -199,7 +280,35 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			log.Error(err, "add machine result contains error")
 			return ctrl.Result{}, result.Error
 		}
+
 		log.Info("machine added", "result", result)
+		log.Info(fmt.Sprintf("Updating machine spec to machine: %s", result.Machine))
+		// Refetch the resource before updating
+		jujuMachine := &infrastructurev1beta1.JujuMachine{}
+		if err := r.Get(ctx, req.NamespacedName, jujuMachine); err != nil {
+			if apierrors.IsNotFound(err) {
+				return ctrl.Result{}, nil
+			}
+			log.Error(err, "failed to get JujuMachine")
+			return ctrl.Result{}, err
+		}
+		log.Info("Refetched jujumachine before performing update for machine number")
+		machine := result.Machine
+		jujuMachine.Spec.Machine = &machine
+		if err := r.Update(ctx, jujuMachine); err != nil {
+			return ctrl.Result{}, err
+		}
+		log.Info("Successfully updated JujuMachine", "Spec.Machine", jujuMachine.Spec.Machine)
+	}
+
+	err = controllerAPI.CloseConnections()
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	err = modelAPI.CloseConnections()
+	if err != nil {
+		return ctrl.Result{}, err
 	}
 
 	log.Info("Stopping reconciliation")

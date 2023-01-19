@@ -11,6 +11,7 @@ metadata:
 spec:
   # using loadbalancer requires metallb on vsphere
   controllerServiceType: loadbalancer
+  endpoint: 10.246.152.100
 ---
 apiVersion: cluster.x-k8s.io/v1beta1
 kind: Cluster

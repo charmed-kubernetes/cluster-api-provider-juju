@@ -35,9 +35,10 @@ spec:
           spec:
             description: JujuMachineSpec defines the desired state of JujuMachine
             properties:
-              foo:
-                description: Foo is an example field of JujuMachine. Edit jujumachine_types.go
-                  to remove/update
+              machine:
+                description: Machine holds a pointer the name of the machine that
+                  is returned when a machine gets created by the Juju API This is
+                  generally a number like 0, 1, 2 etc
                 type: string
             type: object
           status:

@@ -23,13 +23,18 @@ import (
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
+const (
+	JujuMachineFinalizer = "juju.machine.x-k8s.io"
+)
+
 // JujuMachineSpec defines the desired state of JujuMachine
 type JujuMachineSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
-	// Foo is an example field of JujuMachine. Edit jujumachine_types.go to remove/update
-	Foo string `json:"foo,omitempty"`
+	// Machine holds a pointer the name of the machine that is returned when a machine gets created by the Juju API
+	// This is generally a number like 0, 1, 2 etc
+	Machine *string `json:"machine,omitempty"`
 }
 
 // JujuMachineStatus defines the observed state of JujuMachine
