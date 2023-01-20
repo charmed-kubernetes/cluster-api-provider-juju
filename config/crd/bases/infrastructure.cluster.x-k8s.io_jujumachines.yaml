@@ -35,14 +35,31 @@ spec:
           spec:
             description: JujuMachineSpec defines the desired state of JujuMachine
             properties:
-              machine:
-                description: Machine holds a pointer the name of the machine that
-                  is returned when a machine gets created by the Juju API This is
-                  generally a number like 0, 1, 2 etc
+              machineID:
+                description: Machine holds a pointer the ID of the machine that is
+                  returned when a machine gets created by the Juju API This is generally
+                  a number like 0, 1, 2 etc This is expected to eventually be set
+                  by the machine controller
+                type: string
+              providerID:
+                description: Required fields for infra providers This is expected
+                  to eventually be set by the machine controller
                 type: string
             type: object
           status:
             description: JujuMachineStatus defines the observed state of JujuMachine
+            properties:
+              failureMessage:
+                type: string
+              failureReason:
+                description: Optional fields for infra providers
+                type: string
+              ready:
+                default: false
+                description: Required fields for infra providers
+                type: boolean
+            required:
+            - ready
             type: object
         type: object
     served: true

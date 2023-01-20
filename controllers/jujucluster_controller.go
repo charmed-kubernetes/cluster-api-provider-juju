@@ -27,7 +27,6 @@ import (
 
 	infrastructurev1beta1 "github.com/charmed-kubernetes/cluster-api-provider-juju/api/v1beta1"
 	"github.com/charmed-kubernetes/cluster-api-provider-juju/juju"
-	"github.com/juju/juju/api/connector"
 	"github.com/juju/juju/cloud"
 	"github.com/juju/juju/core/constraints"
 	"github.com/pkg/errors"
@@ -175,27 +174,20 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 	}
 
-	// Connect juju API to controller
-	// https://github.com/juju/juju/blob/d5d762b6053b60ab20b4709c0c3dbfb3deb1d1f4/api/connector.go#L22
-	connector, err := connector.NewSimple(connector.SimpleConfig{
+	connectorConfig := juju.Configuration{
 		ControllerAddresses: strings.Split(jujuConfigMap.Data["api_endpoints"], ","),
-		CACert:              jujuConfigMap.Data["ca_cert"],
 		Username:            jujuConfigMap.Data["user"],
 		Password:            jujuConfigMap.Data["password"],
-	})
+		CACert:              jujuConfigMap.Data["ca_cert"],
+	}
 
+	client, err := juju.NewClient(connectorConfig)
 	if err != nil {
-		log.Error(err, "failed to create simple connector")
+		log.Error(err, "failed to create juju client")
 		return ctrl.Result{}, err
 	}
 
-	jujuAPI, err := juju.NewJujuAPi(connector)
-	if err != nil {
-		log.Error(err, "failed to create juju API")
-		return ctrl.Result{}, err
-	}
-
-	log.Info("Connected Juju API to controller")
+	log.Info("Juju client created")
 
 	// examine DeletionTimestamp to determine if object is under deletion
 	if jujuCluster.ObjectMeta.DeletionTimestamp.IsZero() {
@@ -212,13 +204,17 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		// The object is being deleted
 		if controllerutil.ContainsFinalizer(jujuCluster, infrastructurev1beta1.JujuClusterFinalizer) {
 			// our finalizer is present, so lets handle controller resource deletion
-			modelUUID, err := jujuAPI.GetModelUUID(jujuCluster.Name)
+			modelUUID, err := client.Models.GetModelUUID(ctx, jujuCluster.Name)
 			if err != nil {
 				log.Error(err, "failed to retrieve modelUUID when attempting to destroy model")
 				return ctrl.Result{}, err
 			}
-			log.Info("deleting model")
-			if err := jujuAPI.DestroyModel(modelUUID); err != nil {
+			log.Info("destroying model")
+			destroyInput := juju.DestroyModelInput{
+				UUID: modelUUID,
+			}
+			if err := client.Models.DestroyModel(ctx, destroyInput); err != nil {
+				log.Error(err, "failed to destroy model")
 				return ctrl.Result{}, err
 			}
 
@@ -235,14 +231,13 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 
 		// Stop reconciliation as the item is being deleted
-		err = jujuAPI.CloseConnections()
-		if err != nil {
-			return ctrl.Result{}, err
-		}
 		return ctrl.Result{}, nil
 	}
 
-	cloudExists, err := jujuAPI.CloudExists("capi-vsphere")
+	existsInput := juju.CloudExistsInput{
+		Name: jujuCluster.Name,
+	}
+	cloudExists, err := client.Clouds.CloudExists(ctx, existsInput)
 	if err != nil {
 		log.Error(err, "failed to query existing clouds")
 		return ctrl.Result{}, err
@@ -252,18 +247,23 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		log.Info("cloud not found, creating it now")
 		vsphereRegion := cloud.Region{
 			Name:     "Boston",
-			Endpoint: jujuCluster.Spec.Endpoint,
+			Endpoint: jujuCluster.Spec.CloudEndpoint,
 		}
 
 		vsphereCloud := cloud.Cloud{
-			Name:      "capi-vsphere",
+			Name:      jujuCluster.Name,
 			Type:      "vsphere",
-			Endpoint:  jujuCluster.Spec.Endpoint,
+			Endpoint:  jujuCluster.Spec.CloudEndpoint,
 			Regions:   []cloud.Region{vsphereRegion},
 			AuthTypes: []cloud.AuthType{"userpass"},
 		}
 
-		err = jujuAPI.AddCloud(vsphereCloud, true)
+		// Force must be true when adding a non-k8s cloud to a in-k8s juju controller
+		addCloudInput := juju.AddCloudInput{
+			Cloud: vsphereCloud,
+			Force: true,
+		}
+		err = client.Clouds.AddCloud(ctx, addCloudInput)
 		if err != nil {
 			log.Error(err, "failed to add cloud")
 			return ctrl.Result{}, err
@@ -271,7 +271,11 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	// Check if credential has been created yet
-	credentialExists, err := jujuAPI.CredentialExists("capi-vsphere", "capi-vsphere")
+	credExistsInput := juju.CredentialExistsInput{
+		CredentialName: jujuCluster.Name,
+		CloudName:      jujuCluster.Name,
+	}
+	credentialExists, err := client.Credentials.CredentialExists(ctx, credExistsInput)
 	if err != nil {
 		log.Error(err, "failed to query existing credentials")
 		return ctrl.Result{}, err
@@ -286,7 +290,12 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			"password": password,
 			"vmfolder": vmfolder,
 		})
-		err = jujuAPI.AddCredential(credential, "capi-vsphere", "capi-vsphere")
+		addCredInput := juju.AddCredentialInput{
+			Credential:     credential,
+			CredentialName: jujuCluster.Name,
+			CloudName:      jujuCluster.Name,
+		}
+		err = client.Credentials.AddCredential(ctx, addCredInput)
 		if err != nil {
 			log.Error(err, "failed to add credential")
 			return ctrl.Result{}, err
@@ -294,18 +303,41 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	// Check if model has been created yet
-	modelExists, err := jujuAPI.ModelExists(jujuCluster.Name)
+	modelExists, err := client.Models.ModelExists(ctx, jujuCluster.Name)
 	if err != nil {
 		log.Error(err, "failed to query existing models")
 		return ctrl.Result{}, err
 	}
 	if !modelExists {
 		log.Info("model not found, creating it now")
-		err = r.createModel(ctx, cluster, jujuCluster, *jujuAPI)
+		config := make(map[string]interface{})
+		config["juju-http-proxy"] = "http://squid.internal:3128"
+		config["apt-http-proxy"] = "http://squid.internal:3128"
+		config["snap-http-proxy"] = "http://squid.internal:3128"
+		config["juju-https-proxy"] = "http://squid.internal:3128"
+		config["apt-https-proxy"] = "http://squid.internal:3128"
+		config["snap-https-proxy"] = "http://squid.internal:3128"
+		config["apt-no-proxy"] = "localhost,127.0.0.1,ppa.launchpad.net,launchpad.net"
+		config["juju-no-proxy"] = "localhost,127.0.0.1,0.0.0.0,ppa.launchpad.net,launchpad.net,10.0.8.0/24,10.246.154.0/24"
+		config["logging-config"] = "<root>=DEBUG"
+		config["datastore"] = "vsanDatastore"
+		config["primary-network"] = "VLAN_2764"
+		createModelInput := juju.CreateModelInputt{
+			Name:           jujuCluster.Name,
+			Cloud:          jujuCluster.Name,
+			CloudRegion:    "Boston",
+			CredentialName: jujuCluster.Name,
+			Config:         config,
+			Constraints:    constraints.Value{},
+		}
+
+		response, err := client.Models.CreateModel(ctx, createModelInput)
 		if err != nil {
 			log.Error(err, "Error creating model")
 			return ctrl.Result{}, err
 		}
+
+		log.Info("Created model", "response", response)
 	}
 
 	if !jujuCluster.Status.Ready {
@@ -319,10 +351,7 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			return ctrl.Result{}, errors.Wrapf(err, "couldn't patch cluster %q", jujuCluster.Name)
 		}
 	}
-	err = jujuAPI.CloseConnections()
-	if err != nil {
-		return ctrl.Result{}, err
-	}
+
 	log.Info("Stopping reconciliation")
 	return ctrl.Result{}, nil
 }
@@ -600,39 +629,6 @@ func (r *JujuClusterReconciler) createJujuConfigMap(ctx context.Context, cluster
 		log.Error(err, "failed to create juju controller config map")
 		return err
 	}
-
-	return nil
-}
-
-func (r *JujuClusterReconciler) createModel(ctx context.Context, cluster *clusterv1.Cluster, jujuCluster *infrastructurev1beta1.JujuCluster, jujuAPI juju.JujuAPI) error {
-	_ = log.FromContext(ctx)
-	config := make(map[string]interface{})
-	config["juju-http-proxy"] = "http://squid.internal:3128"
-	config["apt-http-proxy"] = "http://squid.internal:3128"
-	config["snap-http-proxy"] = "http://squid.internal:3128"
-	config["juju-https-proxy"] = "http://squid.internal:3128"
-	config["apt-https-proxy"] = "http://squid.internal:3128"
-	config["snap-https-proxy"] = "http://squid.internal:3128"
-	config["apt-no-proxy"] = "localhost,127.0.0.1,ppa.launchpad.net,launchpad.net"
-	config["juju-no-proxy"] = "localhost,127.0.0.1,0.0.0.0,ppa.launchpad.net,launchpad.net,10.0.8.0/24,10.246.154.0/24"
-	config["logging-config"] = "<root>=DEBUG"
-	config["datastore"] = "vsanDatastore"
-	config["primary-network"] = "VLAN_2764"
-	input := juju.CreateModelInput{
-		Name:           jujuCluster.Name,
-		Cloud:          "capi-vsphere",
-		CloudRegion:    "Boston",
-		CredentialName: "capi-vsphere",
-		Config:         config,
-		Constraints:    constraints.Value{},
-	}
-
-	response, err := jujuAPI.CreateModel(input)
-	if err != nil {
-		return err
-	}
-
-	log.Log.Info("Created model", "response", response)
 
 	return nil
 }

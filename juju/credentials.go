@@ -3,7 +3,9 @@ package juju
 import (
 	"context"
 	"fmt"
+	"strings"
 
+	"github.com/juju/juju/api"
 	"github.com/juju/juju/api/client/cloud"
 	jujuCloud "github.com/juju/juju/cloud"
 	"github.com/juju/names/v4"
@@ -18,19 +20,21 @@ type AddCredentialInput struct {
 	Credential     jujuCloud.Credential
 	CredentialName string
 	CloudName      string
-	UserName       string
 }
 
 type CredentialExistsInput struct {
 	CredentialName string
 	CloudName      string
-	UserName       string
 }
 
 func newCredentialsClient(cf ConnectionFactory) *credentialsClient {
 	return &credentialsClient{
 		ConnectionFactory: cf,
 	}
+}
+
+func (c *credentialsClient) getCurrentUser(conn api.Connection) string {
+	return strings.TrimPrefix(conn.AuthTag().String(), PrefixUser)
 }
 
 func (c *credentialsClient) AddCredential(ctx context.Context, input AddCredentialInput) error {
@@ -40,9 +44,11 @@ func (c *credentialsClient) AddCredential(ctx context.Context, input AddCredenti
 		return err
 	}
 
+	currentUser := c.getCurrentUser(conn)
+
 	client := cloud.NewClient(conn)
 	defer client.Close()
-	id := fmt.Sprintf("%s/%s/%s", input.CloudName, input.UserName, input.CredentialName)
+	id := fmt.Sprintf("%s/%s/%s", input.CloudName, currentUser, input.CredentialName)
 	if !names.IsValidCloudCredential(id) {
 		return errors.Errorf("%q is not a valid credential id", id)
 	}
@@ -56,7 +62,9 @@ func (c *credentialsClient) CredentialExists(ctx context.Context, input Credenti
 		return false, err
 	}
 
-	id := fmt.Sprintf("%s/%s/%s", input.CloudName, input.UserName, input.CredentialName)
+	currentUser := c.getCurrentUser(conn)
+
+	id := fmt.Sprintf("%s/%s/%s", input.CloudName, currentUser, input.CredentialName)
 	if !names.IsValidCloudCredential(id) {
 		return false, errors.Errorf("%q is not a valid credential id", id)
 	}
@@ -66,7 +74,7 @@ func (c *credentialsClient) CredentialExists(ctx context.Context, input Credenti
 	client := cloud.NewClient(conn)
 	defer client.Close()
 
-	userCredTags, err := client.UserCredentials(names.NewUserTag(input.UserName), names.NewCloudTag(input.CloudName))
+	userCredTags, err := client.UserCredentials(names.NewUserTag(currentUser), names.NewCloudTag(input.CloudName))
 	if err != nil {
 		return false, err
 	}

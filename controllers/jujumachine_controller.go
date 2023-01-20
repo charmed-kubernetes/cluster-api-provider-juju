@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/charmed-kubernetes/cluster-api-provider-juju/juju"
-	"github.com/juju/juju/api/connector"
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/rpc/params"
@@ -132,53 +131,26 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 	}
 
-	// Connect juju API to controller
-	// Note this is what Juju calls a controller only connection, only a subnet of the API is available
-	// To use the full API you need to specify a model UUID as well
-	// https://github.com/juju/juju/blob/d5d762b6053b60ab20b4709c0c3dbfb3deb1d1f4/api/connector.go#L22
-	controllerConnector, err := connector.NewSimple(connector.SimpleConfig{
+	connectorConfig := juju.Configuration{
 		ControllerAddresses: strings.Split(jujuConfigMap.Data["api_endpoints"], ","),
-		CACert:              jujuConfigMap.Data["ca_cert"],
 		Username:            jujuConfigMap.Data["user"],
 		Password:            jujuConfigMap.Data["password"],
-	})
+		CACert:              jujuConfigMap.Data["ca_cert"],
+	}
+
+	client, err := juju.NewClient(connectorConfig)
 	if err != nil {
-		log.Error(err, "failed to create simple connector")
+		log.Error(err, "failed to create juju client")
 		return ctrl.Result{}, err
 	}
 
-	controllerAPI, err := juju.NewJujuAPi(controllerConnector)
-	if err != nil {
-		log.Error(err, "failed to create juju controller API")
-		return ctrl.Result{}, err
-	}
-
-	modelUUID, err := controllerAPI.GetModelUUID(jujuCluster.Name)
+	modelUUID, err := client.Models.GetModelUUID(ctx, jujuCluster.Name)
 	if err != nil {
 		log.Error(err, "failed to retrieve modelUUID")
 		return ctrl.Result{}, err
 	}
 
-	// Now that we have the model UUID, we need to make a new api connection including the model UUID
-	modelConnector, err := connector.NewSimple(connector.SimpleConfig{
-		ControllerAddresses: strings.Split(jujuConfigMap.Data["api_endpoints"], ","),
-		CACert:              jujuConfigMap.Data["ca_cert"],
-		Username:            jujuConfigMap.Data["user"],
-		Password:            jujuConfigMap.Data["password"],
-		ModelUUID:           modelUUID,
-	})
-	if err != nil {
-		log.Error(err, "failed to create simple connector")
-		return ctrl.Result{}, err
-	}
-
-	modelAPI, err := juju.NewJujuAPi(modelConnector)
-	if err != nil {
-		log.Error(err, "failed to create juju model API")
-		return ctrl.Result{}, err
-	}
-
-	log.Info("Connected Juju API to controller and model")
+	log.Info("Juju client created")
 
 	// examine DeletionTimestamp to determine if object is under deletion
 	if jujuMachine.ObjectMeta.DeletionTimestamp.IsZero() {
@@ -207,18 +179,22 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		if controllerutil.ContainsFinalizer(jujuMachine, infrastructurev1beta1.JujuMachineFinalizer) {
 			// our finalizer is present, so lets handle controller resource deletion
 			log.Info("Finalizer present, handling deletion")
-			if jujuMachine.Spec.Machine != nil {
-				maxWait := 10 * time.Minute
-				machine := jujuMachine.Spec.Machine
+			if jujuMachine.Spec.MachineID != nil {
+				// TODO: Refactor Machine to MachineID in spec
+				machine := jujuMachine.Spec.MachineID
 				log.Info(fmt.Sprintf("Destroying machine: %s", *machine))
-				result, err := modelAPI.DestroyMachine(false, false, false, &maxWait, *machine)
+				input := juju.DestroyMachineInput{
+					Force:     false,
+					Keep:      false,
+					DryRun:    false,
+					MaxWait:   10 * time.Minute,
+					MachineID: *machine,
+					ModelUUID: modelUUID,
+				}
+				result, err := client.Machines.DestroyMachine(ctx, input)
 				if err != nil {
 					log.Error(err, "Error destroying machine")
 					return ctrl.Result{}, err
-				}
-				if result.Error != nil {
-					log.Error(result.Error, "Result contained error")
-					return ctrl.Result{}, result.Error
 				}
 				log.Info("DestroyMachine complete", "result", result)
 			}
@@ -239,15 +215,6 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			}
 		}
 
-		err = controllerAPI.CloseConnections()
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-
-		err = modelAPI.CloseConnections()
-		if err != nil {
-			return ctrl.Result{}, err
-		}
 		// Stop reconciliation as the item is being deleted
 		return ctrl.Result{}, nil
 	}
@@ -261,7 +228,7 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 	log.Info("Refetched jujumachine before performing nil check")
-	if jujuMachine.Spec.Machine == nil {
+	if jujuMachine.Spec.MachineID == nil {
 		log.Info("Machine field in spec was nil, requesting a machine now")
 		cons, err := constraints.Parse("cores=2", "mem=8G", "root-disk=16G")
 		if err != nil {
@@ -271,7 +238,12 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			Jobs:        []model.MachineJob{model.JobHostUnits},
 			Constraints: cons,
 		}
-		result, err := modelAPI.AddMachine(machineParams)
+		input := juju.AddMachineInput{
+			MachineParams: machineParams,
+			ModelUUID:     modelUUID,
+		}
+
+		result, err := client.Machines.AddMachine(ctx, input)
 		if err != nil {
 			log.Error(err, "error adding machine")
 			return ctrl.Result{}, err
@@ -293,22 +265,12 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			return ctrl.Result{}, err
 		}
 		log.Info("Refetched jujumachine before performing update for machine number")
-		machine := result.Machine
-		jujuMachine.Spec.Machine = &machine
+		machineID := result.Machine
+		jujuMachine.Spec.MachineID = &machineID
 		if err := r.Update(ctx, jujuMachine); err != nil {
 			return ctrl.Result{}, err
 		}
-		log.Info("Successfully updated JujuMachine", "Spec.Machine", jujuMachine.Spec.Machine)
-	}
-
-	err = controllerAPI.CloseConnections()
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-
-	err = modelAPI.CloseConnections()
-	if err != nil {
-		return ctrl.Result{}, err
+		log.Info("Successfully updated JujuMachine", "Spec.Machine", jujuMachine.Spec.MachineID)
 	}
 
 	log.Info("Stopping reconciliation")

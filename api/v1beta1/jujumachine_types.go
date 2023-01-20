@@ -32,15 +32,29 @@ type JujuMachineSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
-	// Machine holds a pointer the name of the machine that is returned when a machine gets created by the Juju API
+	// Machine holds a pointer the ID of the machine that is returned when a machine gets created by the Juju API
 	// This is generally a number like 0, 1, 2 etc
-	Machine *string `json:"machine,omitempty"`
+	// This is expected to eventually be set by the machine controller
+	MachineID *string `json:"machineID,omitempty"`
+
+	// Required fields for infra providers
+	// +optional
+	// This is expected to eventually be set by the machine controller
+	ProviderID *string `json:"providerID,omitempty"`
 }
 
 // JujuMachineStatus defines the observed state of JujuMachine
 type JujuMachineStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
+
+	// Required fields for infra providers
+	//+kubebuilder:default=false
+	Ready bool `json:"ready"`
+
+	// Optional fields for infra providers
+	FailureReason  string `json:"failureReason,omitempty"`  // error string for programs
+	FailureMessage string `json:"failureMessage,omitempty"` // error string for humans
 }
 
 //+kubebuilder:object:root=true

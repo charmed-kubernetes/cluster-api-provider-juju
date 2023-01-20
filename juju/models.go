@@ -121,7 +121,32 @@ func (c *modelsClient) GetModelByName(ctx context.Context, name string) (*params
 	return modelInfo, nil
 }
 
-func (c *modelsClient) CreateModel(ctx context.Context, input CreateModelInput) (*CreateModelResponse, error) {
+func (c *modelsClient) ModelExists(ctx context.Context, name string) (bool, error) {
+	conn, err := c.GetConnection(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+
+	currentUser := strings.TrimPrefix(conn.AuthTag().String(), PrefixUser)
+
+	client := modelmanager.NewClient(conn)
+	defer client.Close()
+
+	models, err := client.ListModels(currentUser)
+	if err != nil {
+		return false, err
+	}
+
+	for _, model := range models {
+		if model.Name == name {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+func (c *modelsClient) CreateModel(ctx context.Context, input CreateModelInputt) (*CreateModelResponse, error) {
 	conn, err := c.GetConnection(ctx, nil)
 	if err != nil {
 		return nil, err
