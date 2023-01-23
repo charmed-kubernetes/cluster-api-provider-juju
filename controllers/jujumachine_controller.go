@@ -181,14 +181,14 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			log.Info("Finalizer present, handling deletion")
 			if jujuMachine.Spec.MachineID != nil {
 				// TODO: Refactor Machine to MachineID in spec
-				machine := jujuMachine.Spec.MachineID
-				log.Info(fmt.Sprintf("Destroying machine: %s", *machine))
+				machineID := jujuMachine.Spec.MachineID
+				log.Info(fmt.Sprintf("Destroying machine: %s", *machineID))
 				input := juju.DestroyMachineInput{
 					Force:     false,
 					Keep:      false,
 					DryRun:    false,
 					MaxWait:   10 * time.Minute,
-					MachineID: *machine,
+					MachineID: *machineID,
 					ModelUUID: modelUUID,
 				}
 				result, err := client.Machines.DestroyMachine(ctx, input)
@@ -272,6 +272,8 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 		log.Info("Successfully updated JujuMachine", "Spec.Machine", jujuMachine.Spec.MachineID)
 	}
+
+	// TODO: Set provider ID when machine is running/idle
 
 	log.Info("Stopping reconciliation")
 	return ctrl.Result{}, nil

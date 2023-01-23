@@ -115,41 +115,31 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	// Check if a secret containing cloud user data has been created yet
-	cloudSecret := &kcore.Secret{}
-	objectKey := client.ObjectKey{
-		Namespace: jujuCluster.Namespace,
-		Name:      jujuCluster.Name + "-cloud-secret",
+	cloudSecret, err := r.getCloudSecret(ctx, jujuCluster)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
-	if err := r.Get(ctx, objectKey, cloudSecret); err != nil {
-		if apierrors.IsNotFound(err) {
-			log.Info(fmt.Sprintf("secret %s not found in namespace %s, please create it", jujuCluster.Name+"-cloud-secret", jujuCluster.Namespace))
-			return ctrl.Result{Requeue: true}, nil
-		} else {
-			return ctrl.Result{}, err
-		}
+	if cloudSecret == nil {
+		log.Info(fmt.Sprintf("secret %s not found in namespace %s, please create it", jujuCluster.Name+"-cloud-secret", jujuCluster.Namespace))
+		return ctrl.Result{Requeue: true}, nil
 	}
 
 	// Check if a juju controller has been created yet via the job
-	job := &kbatch.Job{}
-	objectKey = client.ObjectKey{
-		Namespace: jujuCluster.Namespace,
-		Name:      jujuCluster.Name + "-juju-controller-bootstrap",
+	bootstrapJob, err := r.getBootstrapJob(ctx, jujuCluster)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
-	if err := r.Get(ctx, objectKey, job); err != nil {
-		if apierrors.IsNotFound(err) {
-			log.Info("juju controller boostrap job not found, bootstrapping now")
-			if err := r.createJujuControllerResources(ctx, cluster, jujuCluster); err != nil {
-				return ctrl.Result{}, err
-			}
-			// Give it some time to create the job
-			return ctrl.Result{RequeueAfter: 20 * time.Second}, nil
-		} else {
+	if bootstrapJob == nil {
+		log.Info("juju controller boostrap job not found, bootstrapping now")
+		if err := r.createJujuControllerResources(ctx, cluster, jujuCluster); err != nil {
 			return ctrl.Result{}, err
 		}
+		// Give it some time to create the job
+		return ctrl.Result{RequeueAfter: 20 * time.Second}, nil
 	}
 
 	// Ensure the job has completed
-	if job.Status.Succeeded <= 0 {
+	if bootstrapJob.Status.Succeeded <= 0 {
 		log.Info("Waiting for bootstrap job to complete")
 		return ctrl.Result{Requeue: true}, nil
 	} else {
@@ -157,21 +147,16 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	// Check if juju config map has been created yet
-	jujuConfigMap := &kcore.ConfigMap{}
-	objectKey = client.ObjectKey{
-		Namespace: jujuCluster.Namespace,
-		Name:      jujuCluster.Name + "-juju-controller-config",
+	jujuConfigMap, err := r.getJujuConfigMap(ctx, jujuCluster)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
-	if err := r.Get(ctx, objectKey, jujuConfigMap); err != nil {
-		if apierrors.IsNotFound(err) {
-			log.Info("juju controller config not found, creating it now")
-			if err := r.createJujuConfigMap(ctx, cluster, jujuCluster); err != nil {
-				return ctrl.Result{}, err
-			}
-			return ctrl.Result{Requeue: true}, nil
-		} else {
+	if jujuConfigMap == nil {
+		log.Info("juju controller config not found, creating it now")
+		if err := r.createJujuConfigMap(ctx, cluster, jujuCluster); err != nil {
 			return ctrl.Result{}, err
 		}
+		return ctrl.Result{Requeue: true}, nil
 	}
 
 	connectorConfig := juju.Configuration{
@@ -234,10 +219,10 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, nil
 	}
 
-	existsInput := juju.CloudExistsInput{
+	cloudExistsInput := juju.CloudExistsInput{
 		Name: jujuCluster.Name,
 	}
-	cloudExists, err := client.Clouds.CloudExists(ctx, existsInput)
+	cloudExists, err := client.Clouds.CloudExists(ctx, cloudExistsInput)
 	if err != nil {
 		log.Error(err, "failed to query existing clouds")
 		return ctrl.Result{}, err
@@ -245,25 +230,7 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	if !cloudExists {
 		log.Info("cloud not found, creating it now")
-		vsphereRegion := cloud.Region{
-			Name:     "Boston",
-			Endpoint: jujuCluster.Spec.CloudEndpoint,
-		}
-
-		vsphereCloud := cloud.Cloud{
-			Name:      jujuCluster.Name,
-			Type:      "vsphere",
-			Endpoint:  jujuCluster.Spec.CloudEndpoint,
-			Regions:   []cloud.Region{vsphereRegion},
-			AuthTypes: []cloud.AuthType{"userpass"},
-		}
-
-		// Force must be true when adding a non-k8s cloud to a in-k8s juju controller
-		addCloudInput := juju.AddCloudInput{
-			Cloud: vsphereCloud,
-			Force: true,
-		}
-		err = client.Clouds.AddCloud(ctx, addCloudInput)
+		err = createCloud(ctx, jujuCluster, client)
 		if err != nil {
 			log.Error(err, "failed to add cloud")
 			return ctrl.Result{}, err
@@ -282,20 +249,7 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 	if !credentialExists {
 		log.Info("credential not found, creating it now")
-		username := string(cloudSecret.Data["username"][:])
-		password := string(cloudSecret.Data["password"][:])
-		vmfolder := string(cloudSecret.Data["vmfolder"][:])
-		credential := cloud.NewCredential("userpass", map[string]string{
-			"user":     username,
-			"password": password,
-			"vmfolder": vmfolder,
-		})
-		addCredInput := juju.AddCredentialInput{
-			Credential:     credential,
-			CredentialName: jujuCluster.Name,
-			CloudName:      jujuCluster.Name,
-		}
-		err = client.Credentials.AddCredential(ctx, addCredInput)
+		err = createCredential(ctx, cloudSecret, jujuCluster, client)
 		if err != nil {
 			log.Error(err, "failed to add credential")
 			return ctrl.Result{}, err
@@ -310,28 +264,7 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 	if !modelExists {
 		log.Info("model not found, creating it now")
-		config := make(map[string]interface{})
-		config["juju-http-proxy"] = "http://squid.internal:3128"
-		config["apt-http-proxy"] = "http://squid.internal:3128"
-		config["snap-http-proxy"] = "http://squid.internal:3128"
-		config["juju-https-proxy"] = "http://squid.internal:3128"
-		config["apt-https-proxy"] = "http://squid.internal:3128"
-		config["snap-https-proxy"] = "http://squid.internal:3128"
-		config["apt-no-proxy"] = "localhost,127.0.0.1,ppa.launchpad.net,launchpad.net"
-		config["juju-no-proxy"] = "localhost,127.0.0.1,0.0.0.0,ppa.launchpad.net,launchpad.net,10.0.8.0/24,10.246.154.0/24"
-		config["logging-config"] = "<root>=DEBUG"
-		config["datastore"] = "vsanDatastore"
-		config["primary-network"] = "VLAN_2764"
-		createModelInput := juju.CreateModelInputt{
-			Name:           jujuCluster.Name,
-			Cloud:          jujuCluster.Name,
-			CloudRegion:    "Boston",
-			CredentialName: jujuCluster.Name,
-			Config:         config,
-			Constraints:    constraints.Value{},
-		}
-
-		response, err := client.Models.CreateModel(ctx, createModelInput)
+		response, err := createModel(ctx, jujuCluster, client)
 		if err != nil {
 			log.Error(err, "Error creating model")
 			return ctrl.Result{}, err
@@ -631,4 +564,123 @@ func (r *JujuClusterReconciler) createJujuConfigMap(ctx context.Context, cluster
 	}
 
 	return nil
+}
+
+func (r *JujuClusterReconciler) getCloudSecret(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster) (*kcore.Secret, error) {
+	// Check if a secret containing cloud user data has been created yet
+	cloudSecret := &kcore.Secret{}
+	objectKey := client.ObjectKey{
+		Namespace: jujuCluster.Namespace,
+		Name:      jujuCluster.Name + "-cloud-secret",
+	}
+	if err := r.Get(ctx, objectKey, cloudSecret); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		} else {
+			return nil, err
+		}
+	}
+
+	return cloudSecret, nil
+}
+
+func (r *JujuClusterReconciler) getBootstrapJob(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster) (*kbatch.Job, error) {
+	job := &kbatch.Job{}
+	objectKey := client.ObjectKey{
+		Namespace: jujuCluster.Namespace,
+		Name:      jujuCluster.Name + "-juju-controller-bootstrap",
+	}
+	if err := r.Get(ctx, objectKey, job); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		} else {
+			return nil, err
+		}
+	}
+	return job, nil
+}
+
+func (r *JujuClusterReconciler) getJujuConfigMap(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster) (*kcore.ConfigMap, error) {
+	jujuConfigMap := &kcore.ConfigMap{}
+	objectKey := client.ObjectKey{
+		Namespace: jujuCluster.Namespace,
+		Name:      jujuCluster.Name + "-juju-controller-config",
+	}
+	if err := r.Get(ctx, objectKey, jujuConfigMap); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		} else {
+			return nil, err
+		}
+	}
+	return jujuConfigMap, nil
+}
+
+func createCloud(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster, client *juju.Client) error {
+	vsphereRegion := cloud.Region{
+		Name:     "Boston",
+		Endpoint: jujuCluster.Spec.CloudEndpoint,
+	}
+
+	vsphereCloud := cloud.Cloud{
+		Name:      jujuCluster.Name,
+		Type:      "vsphere",
+		Endpoint:  jujuCluster.Spec.CloudEndpoint,
+		Regions:   []cloud.Region{vsphereRegion},
+		AuthTypes: []cloud.AuthType{"userpass"},
+	}
+
+	// Force must be true when adding a non-k8s cloud to a in-k8s juju controller
+	addCloudInput := juju.AddCloudInput{
+		Cloud: vsphereCloud,
+		Force: true,
+	}
+	return client.Clouds.AddCloud(ctx, addCloudInput)
+}
+
+func createCredential(ctx context.Context, cloudSecret *kcore.Secret, jujuCluster *infrastructurev1beta1.JujuCluster, client *juju.Client) error {
+	username := string(cloudSecret.Data["username"][:])
+	password := string(cloudSecret.Data["password"][:])
+	vmfolder := string(cloudSecret.Data["vmfolder"][:])
+	credential := cloud.NewCredential("userpass", map[string]string{
+		"user":     username,
+		"password": password,
+		"vmfolder": vmfolder,
+	})
+	addCredInput := juju.AddCredentialInput{
+		Credential:     credential,
+		CredentialName: jujuCluster.Name,
+		CloudName:      jujuCluster.Name,
+	}
+	return client.Credentials.AddCredential(ctx, addCredInput)
+}
+
+func createModel(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster, client *juju.Client) (*juju.CreateModelResponse, error) {
+	config := make(map[string]interface{})
+	config["juju-http-proxy"] = "http://squid.internal:3128"
+	config["apt-http-proxy"] = "http://squid.internal:3128"
+	config["snap-http-proxy"] = "http://squid.internal:3128"
+	config["juju-https-proxy"] = "http://squid.internal:3128"
+	config["apt-https-proxy"] = "http://squid.internal:3128"
+	config["snap-https-proxy"] = "http://squid.internal:3128"
+	config["apt-no-proxy"] = "localhost,127.0.0.1,ppa.launchpad.net,launchpad.net"
+	config["juju-no-proxy"] = "localhost,127.0.0.1,0.0.0.0,ppa.launchpad.net,launchpad.net,10.0.8.0/24,10.246.154.0/24"
+	config["logging-config"] = "<root>=DEBUG"
+	config["datastore"] = "vsanDatastore"
+	config["primary-network"] = "VLAN_2764"
+	createModelInput := juju.CreateModelInputt{
+		Name:           jujuCluster.Name,
+		Cloud:          jujuCluster.Name,
+		CloudRegion:    "Boston",
+		CredentialName: jujuCluster.Name,
+		Config:         config,
+		Constraints:    constraints.Value{},
+	}
+
+	response, err := client.Models.CreateModel(ctx, createModelInput)
+	if err != nil {
+		return nil, err
+	}
+
+	return response, nil
 }
