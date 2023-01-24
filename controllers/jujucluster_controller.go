@@ -102,7 +102,7 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	cluster, err := util.GetOwnerCluster(ctx, r.Client, jujuCluster.ObjectMeta)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			log.Info("Waiting for cluster owner to be found")
+			log.Info("waiting for cluster owner to be found")
 			return ctrl.Result{}, nil
 		}
 		log.Error(err, "failed to get owner Cluster")
@@ -110,7 +110,7 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	if cluster == nil {
-		log.Info("Waiting for cluster owner to be non-nil")
+		log.Info("waiting for cluster owner to be non-nil")
 		return ctrl.Result{}, nil
 	}
 
@@ -140,10 +140,8 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	// Ensure the job has completed
 	if bootstrapJob.Status.Succeeded <= 0 {
-		log.Info("Waiting for bootstrap job to complete")
+		log.Info("waiting for bootstrap job to complete")
 		return ctrl.Result{Requeue: true}, nil
-	} else {
-		log.Info("bootstrap job completed")
 	}
 
 	// Check if juju config map has been created yet
@@ -172,8 +170,6 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
-	log.Info("Juju client created")
-
 	// examine DeletionTimestamp to determine if object is under deletion
 	if jujuCluster.ObjectMeta.DeletionTimestamp.IsZero() {
 		// The object is not being deleted, so if it does not have our finalizer,
@@ -184,22 +180,92 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			if err := r.Update(ctx, jujuCluster); err != nil {
 				return ctrl.Result{}, err
 			}
+			log.Info("added finalizer")
+			return ctrl.Result{}, nil
 		}
 	} else {
 		// The object is being deleted
 		if controllerutil.ContainsFinalizer(jujuCluster, infrastructurev1beta1.JujuClusterFinalizer) {
 			// our finalizer is present, so lets handle controller resource deletion
-			modelUUID, err := client.Models.GetModelUUID(ctx, jujuCluster.Name)
+			modelExists, err := client.Models.ModelExists(ctx, jujuCluster.Name)
 			if err != nil {
-				log.Error(err, "failed to retrieve modelUUID when attempting to destroy model")
+				log.Error(err, "failed to query existing models")
 				return ctrl.Result{}, err
 			}
-			log.Info("destroying model")
-			destroyInput := juju.DestroyModelInput{
-				UUID: modelUUID,
+			if modelExists {
+				modelUUID, err := client.Models.GetModelUUID(ctx, jujuCluster.Name)
+				if err != nil {
+					log.Error(err, "failed to retrieve modelUUID when attempting to destroy model")
+					return ctrl.Result{}, err
+				}
+
+				if modelUUID != "" {
+					log.Info("destroying model")
+					destroyModelInput := juju.DestroyModelInput{
+						UUID: modelUUID,
+					}
+					if err := client.Models.DestroyModel(ctx, destroyModelInput); err != nil {
+						log.Error(err, "failed to destroy model")
+						return ctrl.Result{}, err
+					}
+				}
 			}
-			if err := client.Models.DestroyModel(ctx, destroyInput); err != nil {
-				log.Error(err, "failed to destroy model")
+			credExistsInput := juju.CredentialExistsInput{
+				CredentialName: jujuCluster.Name,
+				CloudName:      jujuCluster.Name,
+			}
+			credentialExists, err := client.Credentials.CredentialExists(ctx, credExistsInput)
+			if err != nil {
+				log.Error(err, "failed to query existing credentials")
+				return ctrl.Result{}, err
+			}
+			if credentialExists {
+				revokeCredInput := juju.RevokeCredentialInput{
+					CredentialName: jujuCluster.Name,
+					CloudName:      jujuCluster.Name,
+				}
+				log.Info("removing credential")
+				if err := client.Credentials.RevokeCredential(ctx, revokeCredInput); err != nil {
+					if strings.Contains(err.Error(), "it is still used by") {
+						log.Info("waiting for model to be destroyed, will retry")
+						return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+					}
+					log.Error(err, "failed to revoke credential")
+					return ctrl.Result{}, err
+				}
+
+			}
+
+			cloudExistsInput := juju.CloudExistsInput{
+				Name: jujuCluster.Name,
+			}
+			cloudExists, err := client.Clouds.CloudExists(ctx, cloudExistsInput)
+			if err != nil {
+				log.Error(err, "failed to query existing clouds")
+				return ctrl.Result{}, err
+			}
+			if cloudExists {
+				log.Info("removing cloud")
+				if err := client.Clouds.RemoveCloud(ctx, jujuCluster.Name); err != nil {
+					if strings.Contains(err.Error(), "it is still used by") {
+						log.Info("waiting for model to be destroyed, will retry")
+						return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+					}
+					log.Error(err, "failed to remove cloud")
+					return ctrl.Result{}, err
+				}
+			}
+
+			log.Info("destroying controller")
+			destroyControllerInput := juju.DestroyControllerInput{
+				DestroyModels:  true,
+				DestroyStorage: true,
+				Force:          true,
+				MaxWait:        10 * time.Minute,
+				ModelTimeout:   30 * time.Minute,
+			}
+			if err := client.Controller.DestroyController(ctx, destroyControllerInput); err != nil {
+				log.Error(err, "failed to destroy controller")
 				return ctrl.Result{}, err
 			}
 
@@ -270,7 +336,7 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			return ctrl.Result{}, err
 		}
 
-		log.Info("Created model", "response", response)
+		log.Info("created model", "response", response)
 	}
 
 	if !jujuCluster.Status.Ready {
@@ -278,14 +344,14 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
-		log.Info("Patching cluster ready status to true")
+		log.Info("patching cluster ready status to true")
 		jujuCluster.Status.Ready = true
 		if err := helper.Patch(ctx, jujuCluster); err != nil {
 			return ctrl.Result{}, errors.Wrapf(err, "couldn't patch cluster %q", jujuCluster.Name)
 		}
 	}
 
-	log.Info("Stopping reconciliation")
+	log.Info("stopping reconciliation")
 	return ctrl.Result{}, nil
 }
 
@@ -369,7 +435,7 @@ func (r *JujuClusterReconciler) createJujuControllerResources(ctx context.Contex
 		job,
 	}
 
-	log.Info("Creating resources necessary for bootstrapping juju controller")
+	log.Info("creating resources necessary for bootstrapping juju controller")
 	for _, obj := range objects {
 		if err := r.Create(ctx, obj); err != nil {
 			log.Error(err, "failed to create object")
@@ -443,7 +509,7 @@ func (r *JujuClusterReconciler) deleteJujuControllerResources(ctx context.Contex
 				return err
 			}
 		} else {
-			log.Info(fmt.Sprintf("Deleting %s %s", kind, name))
+			log.Info(fmt.Sprintf("deleting %s %s", kind, name))
 			err = r.Delete(ctx, pair.object, &pair.options)
 			if err != nil {
 				log.Error(err, fmt.Sprintf("%s %s could not be deleted", kind, name))

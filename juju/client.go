@@ -26,6 +26,7 @@ type Client struct {
 	Clouds      cloudsClient
 	Credentials credentialsClient
 	Machines    machinesClient
+	Controller  controllerClient
 }
 
 type ConnectionFactory struct {
@@ -42,6 +43,7 @@ func NewClient(config Configuration) (*Client, error) {
 		Clouds:      *newCloudsClient(cf),
 		Credentials: *newCredentialsClient(cf),
 		Machines:    *newMachinesClient(cf),
+		Controller:  *newControllerClient(cf),
 	}, nil
 }
 

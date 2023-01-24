@@ -22,6 +22,11 @@ type AddCredentialInput struct {
 	CloudName      string
 }
 
+type RevokeCredentialInput struct {
+	CredentialName string
+	CloudName      string
+}
+
 type CredentialExistsInput struct {
 	CredentialName string
 	CloudName      string
@@ -54,6 +59,25 @@ func (c *credentialsClient) AddCredential(ctx context.Context, input AddCredenti
 	}
 	cloudCredTag := names.NewCloudCredentialTag(id)
 	return client.AddCredential(cloudCredTag.String(), input.Credential)
+}
+
+func (c *credentialsClient) RevokeCredential(ctx context.Context, input RevokeCredentialInput) error {
+
+	conn, err := c.GetConnection(ctx, nil)
+	if err != nil {
+		return err
+	}
+
+	currentUser := c.getCurrentUser(conn)
+
+	client := cloud.NewClient(conn)
+	defer client.Close()
+	id := fmt.Sprintf("%s/%s/%s", input.CloudName, currentUser, input.CredentialName)
+	if !names.IsValidCloudCredential(id) {
+		return errors.Errorf("%q is not a valid credential id", id)
+	}
+	cloudCredTag := names.NewCloudCredentialTag(id)
+	return client.RevokeCredential(cloudCredTag, false)
 }
 
 func (c *credentialsClient) CredentialExists(ctx context.Context, input CredentialExistsInput) (bool, error) {

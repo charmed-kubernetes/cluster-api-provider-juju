@@ -43,6 +43,23 @@ func (c *cloudsClient) AddCloud(ctx context.Context, input AddCloudInput) error 
 	return nil
 }
 
+func (c *cloudsClient) RemoveCloud(ctx context.Context, cloudName string) error {
+	conn, err := c.GetConnection(ctx, nil)
+	if err != nil {
+		return err
+	}
+
+	client := cloud.NewClient(conn)
+	defer client.Close()
+
+	err = client.RemoveCloud(cloudName)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (c *cloudsClient) CloudExists(ctx context.Context, input CloudExistsInput) (bool, error) {
 	conn, err := c.GetConnection(ctx, nil)
 	if err != nil {
