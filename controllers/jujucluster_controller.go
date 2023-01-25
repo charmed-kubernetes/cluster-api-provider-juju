@@ -260,7 +260,7 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			destroyControllerInput := juju.DestroyControllerInput{
 				DestroyModels:  true,
 				DestroyStorage: true,
-				Force:          true,
+				Force:          false,
 				MaxWait:        10 * time.Minute,
 				ModelTimeout:   30 * time.Minute,
 			}

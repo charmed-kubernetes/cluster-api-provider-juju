@@ -201,6 +201,28 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			return ctrl.Result{}, err
 		}
 		log.Info("successfully updated JujuMachine", "Spec.Machine", jujuMachine.Spec.MachineID)
+	} else {
+		machineID := jujuMachine.Spec.MachineID
+		getMachineInput := juju.GetMachineInput{
+			ModelUUID: modelUUID,
+			MachineID: *machineID,
+		}
+		machine, err := client.Machines.GetMachine(ctx, getMachineInput)
+		if err != nil {
+			log.Error(err, fmt.Sprintf("failed to retrieve machine with machine ID %s", *machineID))
+			return ctrl.Result{}, err
+		}
+		if machine.InstanceId != "" {
+			jujuMachine.Spec.ProviderID = &machine.InstanceId
+			if err := r.Update(ctx, jujuMachine); err != nil {
+				return ctrl.Result{}, err
+			}
+			log.Info("successfully updated JujuMachine", "Spec.ProviderID", jujuMachine.Spec.ProviderID)
+		} else {
+			log.Info("machine instance ID was empty, requeueing")
+			return ctrl.Result{Requeue: true}, nil
+		}
+
 	}
 
 	// TODO: Set provider ID when machine is running/idle

@@ -2,10 +2,13 @@ package juju
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/juju/juju/api/client/machinemanager"
+	"github.com/juju/juju/api/client/modelmanager"
 	"github.com/juju/juju/rpc/params"
+	"github.com/juju/names/v4"
 	"github.com/pkg/errors"
 )
 
@@ -25,6 +28,11 @@ type DestroyMachineInput struct {
 	MaxWait   time.Duration
 	MachineID string
 	ModelUUID string
+}
+
+type GetMachineInput struct {
+	ModelUUID string
+	MachineID string
 }
 
 func newMachinesClient(cf ConnectionFactory) *machinesClient {
@@ -84,5 +92,34 @@ func (c *machinesClient) DestroyMachine(ctx context.Context, input DestroyMachin
 	}
 
 	return results[0], nil
+}
 
+func (c *machinesClient) GetMachine(ctx context.Context, input GetMachineInput) (*params.ModelMachineInfo, error) {
+	conn, err := c.GetConnection(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	client := modelmanager.NewClient(conn)
+	defer client.Close()
+	models, err := client.ModelInfo([]names.ModelTag{names.NewModelTag(input.ModelUUID)})
+	if err != nil {
+		return nil, err
+	}
+
+	if len(models) > 1 {
+		return nil, fmt.Errorf("more than one model returned for UUID: %s", input.ModelUUID)
+	}
+	if len(models) < 1 {
+		return nil, fmt.Errorf("no model returned for UUID: %s", input.ModelUUID)
+	}
+
+	modelInfo := *models[0].Result
+	for _, machine := range modelInfo.Machines {
+		if machine.Id == input.MachineID {
+			return &machine, nil
+		}
+	}
+
+	return nil, nil
 }
