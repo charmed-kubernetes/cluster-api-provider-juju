@@ -69,7 +69,6 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		log.Error(err, "failed to get JujuMachine")
 		return ctrl.Result{}, err
 	}
-	log.Info("retrieved JujuMachine successfully", "JujuMachine", jujuMachine)
 
 	machine, err := util.GetOwnerMachine(ctx, r.Client, jujuMachine.ObjectMeta)
 	if err != nil {
@@ -97,8 +96,6 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		log.Info("cluster is not ready yet")
 		return ctrl.Result{}, nil
 	}
-
-	log.Info("cluster is ready!")
 
 	// Get Infra cluster
 	jujuCluster := &infrastructurev1beta1.JujuCluster{}
@@ -150,8 +147,6 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
-	log.Info("juju client created")
-
 	// examine DeletionTimestamp to determine if object is under deletion
 	if jujuMachine.ObjectMeta.DeletionTimestamp.IsZero() {
 		// The object is not being deleted, so if it does not have our finalizer,
@@ -187,6 +182,7 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 
 		// Stop reconciliation as the item is being deleted
+		log.Info("stopping reconciliation")
 		return ctrl.Result{}, nil
 	}
 
