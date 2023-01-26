@@ -166,12 +166,28 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			// our finalizer is present, so lets handle controller resource deletion
 			if jujuMachine.Spec.MachineID != nil {
 				machineID := jujuMachine.Spec.MachineID
-				log.Info(fmt.Sprintf("Destroying machine: %s", *machineID))
-				result, err := destroyMachine(ctx, *machineID, modelUUID, client)
+				getMachineInput := juju.GetMachineInput{
+					ModelUUID: modelUUID,
+					MachineID: *machineID,
+				}
+				machine, err := client.Machines.GetMachine(ctx, getMachineInput)
 				if err != nil {
+					log.Error(err, "error getting machine when attempting deletion")
 					return ctrl.Result{}, err
 				}
-				log.Info("machine destroyed", "result", result)
+				if machine != nil {
+					log.Info("machine information", "machine", machine)
+					log.Info(fmt.Sprintf("Destroying machine: %s", *machineID))
+					result, err := destroyMachine(ctx, *machineID, modelUUID, client)
+					if err != nil {
+						log.Error(err, fmt.Sprintf("Error destroying machine %s", *jujuMachine.Spec.MachineID))
+						return ctrl.Result{}, err
+					}
+					log.Info("request to destroy machine succeeded, requeueing", "result", result)
+					return ctrl.Result{Requeue: true}, err
+				}
+				// If we make it here, it means the machine was nil and is no longer in the model
+				log.Info(fmt.Sprintf("machine %s destroyed", *jujuMachine.Spec.MachineID))
 			}
 
 			// remove our finalizer from the list and update it.
@@ -201,7 +217,8 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			return ctrl.Result{}, err
 		}
 		log.Info("successfully updated JujuMachine", "Spec.Machine", jujuMachine.Spec.MachineID)
-	} else {
+	}
+	if jujuMachine.Spec.ProviderID == nil {
 		machineID := jujuMachine.Spec.MachineID
 		getMachineInput := juju.GetMachineInput{
 			ModelUUID: modelUUID,
@@ -212,20 +229,24 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			log.Error(err, fmt.Sprintf("failed to retrieve machine with machine ID %s", *machineID))
 			return ctrl.Result{}, err
 		}
-		if machine.InstanceId != "" {
-			jujuMachine.Spec.ProviderID = &machine.InstanceId
-			if err := r.Update(ctx, jujuMachine); err != nil {
-				return ctrl.Result{}, err
-			}
-			log.Info("successfully updated JujuMachine", "Spec.ProviderID", jujuMachine.Spec.ProviderID)
-		} else {
-			log.Info("machine instance ID was empty, requeueing")
+		log.Info("machine", "status", machine.Status)
+		if machine.Status != "started" {
+			log.Info("waiting for machine to start, requeueing")
 			return ctrl.Result{Requeue: true}, nil
+		} else {
+			if machine.InstanceId != "" {
+				jujuMachine.Spec.ProviderID = &machine.InstanceId
+				if err := r.Update(ctx, jujuMachine); err != nil {
+					return ctrl.Result{}, err
+				}
+				log.Info("successfully updated JujuMachine", "Spec.ProviderID", jujuMachine.Spec.ProviderID)
+			} else {
+				log.Info("machine instance ID was empty, requeueing")
+				return ctrl.Result{Requeue: true}, nil
+			}
 		}
 
 	}
-
-	// TODO: Set provider ID when machine is running/idle
 
 	log.Info("stopping reconciliation")
 	return ctrl.Result{}, nil

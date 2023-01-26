@@ -190,24 +190,38 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			modelExists, err := jujuClient.Models.ModelExists(ctx, jujuCluster.Name)
 			if err != nil {
 				log.Error(err, "failed to query existing models")
-				return ctrl.Result{}, err
 			}
 			if modelExists {
-				modelUUID, err := jujuClient.Models.GetModelUUID(ctx, jujuCluster.Name)
+				model, err := jujuClient.Models.GetModelByName(ctx, jujuCluster.Name)
 				if err != nil {
-					log.Error(err, "failed to retrieve modelUUID when attempting to destroy model")
+					log.Error(err, "failed to get model info")
 					return ctrl.Result{}, err
 				}
+				if model != nil {
+					if model.Status.Status != "destroying" {
+						modelUUID, err := jujuClient.Models.GetModelUUID(ctx, jujuCluster.Name)
+						if err != nil {
+							log.Error(err, "failed to retrieve modelUUID when attempting to destroy model")
+							return ctrl.Result{}, err
+						}
 
-				if modelUUID != "" {
-					log.Info("destroying model")
-					destroyModelInput := juju.DestroyModelInput{
-						UUID: modelUUID,
+						if modelUUID != "" {
+							log.Info("destroying model")
+							destroyModelInput := juju.DestroyModelInput{
+								UUID: modelUUID,
+							}
+							if err := jujuClient.Models.DestroyModel(ctx, destroyModelInput); err != nil {
+								log.Error(err, "failed to destroy model")
+								return ctrl.Result{}, err
+							}
+							log.Info("request to destroy model succeeded, requeueing")
+							return ctrl.Result{RequeueAfter: 10 * time.Second}, err
+						}
+					} else {
+						log.Info("model is being destroyed, requeueing")
+						return ctrl.Result{RequeueAfter: 10 * time.Second}, err
 					}
-					if err := jujuClient.Models.DestroyModel(ctx, destroyModelInput); err != nil {
-						log.Error(err, "failed to destroy model")
-						return ctrl.Result{}, err
-					}
+
 				}
 			}
 			credExistsInput := juju.CredentialExistsInput{
@@ -226,13 +240,11 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				}
 				log.Info("removing credential")
 				if err := jujuClient.Credentials.RevokeCredential(ctx, revokeCredInput); err != nil {
-					if strings.Contains(err.Error(), "it is still used by") {
-						log.Info("waiting for model to be destroyed, will retry")
-						return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
-					}
 					log.Error(err, "failed to revoke credential")
 					return ctrl.Result{}, err
 				}
+				log.Info("request to revoke credential succeeded, requeueing")
+				return ctrl.Result{Requeue: true}, err
 
 			}
 
@@ -247,13 +259,11 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			if cloudExists {
 				log.Info("removing cloud")
 				if err := jujuClient.Clouds.RemoveCloud(ctx, jujuCluster.Name); err != nil {
-					if strings.Contains(err.Error(), "it is still used by") {
-						log.Info("waiting for model to be destroyed, will retry")
-						return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
-					}
 					log.Error(err, "failed to remove cloud")
 					return ctrl.Result{}, err
 				}
+				log.Info("request to revoke remove cloud succeeded, requeueing")
+				return ctrl.Result{Requeue: true}, err
 			}
 
 			log.Info("destroying controller")
