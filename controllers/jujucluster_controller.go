@@ -27,7 +27,6 @@ import (
 
 	infrastructurev1beta1 "github.com/charmed-kubernetes/cluster-api-provider-juju/api/v1beta1"
 	"github.com/charmed-kubernetes/cluster-api-provider-juju/juju"
-	"github.com/juju/juju/api/connector"
 	"github.com/juju/juju/cloud"
 	"github.com/juju/juju/core/constraints"
 	"github.com/pkg/errors"
@@ -103,7 +102,7 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	cluster, err := util.GetOwnerCluster(ctx, r.Client, jujuCluster.ObjectMeta)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			log.Info("Waiting for cluster owner to be found")
+			log.Info("waiting for cluster owner to be found")
 			return ctrl.Result{}, nil
 		}
 		log.Error(err, "failed to get owner Cluster")
@@ -111,91 +110,65 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	if cluster == nil {
-		log.Info("Waiting for cluster owner to be non-nil")
+		log.Info("waiting for cluster owner to be non-nil")
 		return ctrl.Result{}, nil
 	}
 
 	// Check if a secret containing cloud user data has been created yet
-	cloudSecret := &kcore.Secret{}
-	objectKey := client.ObjectKey{
-		Namespace: jujuCluster.Namespace,
-		Name:      jujuCluster.Name + "-cloud-secret",
+	cloudSecret, err := r.getCloudSecret(ctx, jujuCluster)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
-	if err := r.Get(ctx, objectKey, cloudSecret); err != nil {
-		if apierrors.IsNotFound(err) {
-			log.Info(fmt.Sprintf("secret %s not found in namespace %s, please create it", jujuCluster.Name+"-cloud-secret", jujuCluster.Namespace))
-			return ctrl.Result{Requeue: true}, nil
-		} else {
-			return ctrl.Result{}, err
-		}
+	if cloudSecret == nil {
+		log.Info(fmt.Sprintf("secret %s not found in namespace %s, please create it", jujuCluster.Name+"-cloud-secret", jujuCluster.Namespace))
+		return ctrl.Result{Requeue: true}, nil
 	}
 
 	// Check if a juju controller has been created yet via the job
-	job := &kbatch.Job{}
-	objectKey = client.ObjectKey{
-		Namespace: jujuCluster.Namespace,
-		Name:      jujuCluster.Name + "-juju-controller-bootstrap",
+	bootstrapJob, err := r.getBootstrapJob(ctx, jujuCluster)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
-	if err := r.Get(ctx, objectKey, job); err != nil {
-		if apierrors.IsNotFound(err) {
-			log.Info("juju controller boostrap job not found, bootstrapping now")
-			if err := r.createJujuControllerResources(ctx, cluster, jujuCluster); err != nil {
-				return ctrl.Result{}, err
-			}
-			// Give it some time to create the job
-			return ctrl.Result{RequeueAfter: 20 * time.Second}, nil
-		} else {
+	if bootstrapJob == nil {
+		log.Info("juju controller boostrap job not found, bootstrapping now")
+		if err := r.createJujuControllerResources(ctx, cluster, jujuCluster); err != nil {
 			return ctrl.Result{}, err
 		}
+		// Give it some time to create the job
+		return ctrl.Result{RequeueAfter: 20 * time.Second}, nil
 	}
 
 	// Ensure the job has completed
-	if job.Status.Succeeded <= 0 {
-		log.Info("Waiting for bootstrap job to complete")
+	if bootstrapJob.Status.Succeeded <= 0 {
+		log.Info("waiting for bootstrap job to complete")
 		return ctrl.Result{Requeue: true}, nil
-	} else {
-		log.Info("bootstrap job completed")
 	}
 
 	// Check if juju config map has been created yet
-	jujuConfigMap := &kcore.ConfigMap{}
-	objectKey = client.ObjectKey{
-		Namespace: jujuCluster.Namespace,
-		Name:      jujuCluster.Name + "-juju-controller-config",
+	jujuConfigMap, err := r.getJujuConfigMap(ctx, jujuCluster)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
-	if err := r.Get(ctx, objectKey, jujuConfigMap); err != nil {
-		if apierrors.IsNotFound(err) {
-			log.Info("juju controller config not found, creating it now")
-			if err := r.createJujuConfigMap(ctx, cluster, jujuCluster); err != nil {
-				return ctrl.Result{}, err
-			}
-			return ctrl.Result{Requeue: true}, nil
-		} else {
+	if jujuConfigMap == nil {
+		log.Info("juju controller config not found, creating it now")
+		if err := r.createJujuConfigMap(ctx, cluster, jujuCluster); err != nil {
 			return ctrl.Result{}, err
 		}
+		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// Connect juju API to controller
-	// https://github.com/juju/juju/blob/d5d762b6053b60ab20b4709c0c3dbfb3deb1d1f4/api/connector.go#L22
-	connector, err := connector.NewSimple(connector.SimpleConfig{
+	connectorConfig := juju.Configuration{
 		ControllerAddresses: strings.Split(jujuConfigMap.Data["api_endpoints"], ","),
-		CACert:              jujuConfigMap.Data["ca_cert"],
 		Username:            jujuConfigMap.Data["user"],
 		Password:            jujuConfigMap.Data["password"],
-	})
-
-	if err != nil {
-		log.Error(err, "failed to create simple connector")
-		return ctrl.Result{}, err
+		CACert:              jujuConfigMap.Data["ca_cert"],
 	}
 
-	jujuAPI, err := juju.NewJujuAPi(connector)
+	jujuClient, err := juju.NewClient(connectorConfig)
 	if err != nil {
-		log.Error(err, "failed to create juju API")
+		log.Error(err, "failed to create juju client")
 		return ctrl.Result{}, err
 	}
-
-	log.Info("Connected Juju API to controller")
 
 	// examine DeletionTimestamp to determine if object is under deletion
 	if jujuCluster.ObjectMeta.DeletionTimestamp.IsZero() {
@@ -207,18 +180,102 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			if err := r.Update(ctx, jujuCluster); err != nil {
 				return ctrl.Result{}, err
 			}
+			log.Info("added finalizer")
+			return ctrl.Result{}, nil
 		}
 	} else {
 		// The object is being deleted
 		if controllerutil.ContainsFinalizer(jujuCluster, infrastructurev1beta1.JujuClusterFinalizer) {
 			// our finalizer is present, so lets handle controller resource deletion
-			modelUUID, err := jujuAPI.GetModelUUID(jujuCluster.Name)
+			modelExists, err := jujuClient.Models.ModelExists(ctx, jujuCluster.Name)
 			if err != nil {
-				log.Error(err, "failed to retrieve modelUUID when attempting to destroy model")
+				log.Error(err, "failed to query existing models")
+			}
+			if modelExists {
+				model, err := jujuClient.Models.GetModelByName(ctx, jujuCluster.Name)
+				if err != nil {
+					log.Error(err, "failed to get model info")
+					return ctrl.Result{}, err
+				}
+				if model != nil {
+					if model.Status.Status != "destroying" {
+						modelUUID, err := jujuClient.Models.GetModelUUID(ctx, jujuCluster.Name)
+						if err != nil {
+							log.Error(err, "failed to retrieve modelUUID when attempting to destroy model")
+							return ctrl.Result{}, err
+						}
+
+						if modelUUID != "" {
+							log.Info("destroying model")
+							destroyModelInput := juju.DestroyModelInput{
+								UUID: modelUUID,
+							}
+							if err := jujuClient.Models.DestroyModel(ctx, destroyModelInput); err != nil {
+								log.Error(err, "failed to destroy model")
+								return ctrl.Result{}, err
+							}
+							log.Info("request to destroy model succeeded, requeueing")
+							return ctrl.Result{RequeueAfter: 10 * time.Second}, err
+						}
+					} else {
+						log.Info("model is being destroyed, requeueing")
+						return ctrl.Result{RequeueAfter: 10 * time.Second}, err
+					}
+
+				}
+			}
+			credExistsInput := juju.CredentialExistsInput{
+				CredentialName: jujuCluster.Name,
+				CloudName:      jujuCluster.Name,
+			}
+			credentialExists, err := jujuClient.Credentials.CredentialExists(ctx, credExistsInput)
+			if err != nil {
+				log.Error(err, "failed to query existing credentials")
 				return ctrl.Result{}, err
 			}
-			log.Info("deleting model")
-			if err := jujuAPI.DestroyModel(modelUUID); err != nil {
+			if credentialExists {
+				revokeCredInput := juju.RevokeCredentialInput{
+					CredentialName: jujuCluster.Name,
+					CloudName:      jujuCluster.Name,
+				}
+				log.Info("removing credential")
+				if err := jujuClient.Credentials.RevokeCredential(ctx, revokeCredInput); err != nil {
+					log.Error(err, "failed to revoke credential")
+					return ctrl.Result{}, err
+				}
+				log.Info("request to revoke credential succeeded, requeueing")
+				return ctrl.Result{Requeue: true}, err
+
+			}
+
+			cloudExistsInput := juju.CloudExistsInput{
+				Name: jujuCluster.Name,
+			}
+			cloudExists, err := jujuClient.Clouds.CloudExists(ctx, cloudExistsInput)
+			if err != nil {
+				log.Error(err, "failed to query existing clouds")
+				return ctrl.Result{}, err
+			}
+			if cloudExists {
+				log.Info("removing cloud")
+				if err := jujuClient.Clouds.RemoveCloud(ctx, jujuCluster.Name); err != nil {
+					log.Error(err, "failed to remove cloud")
+					return ctrl.Result{}, err
+				}
+				log.Info("request to revoke remove cloud succeeded, requeueing")
+				return ctrl.Result{Requeue: true}, err
+			}
+
+			log.Info("destroying controller")
+			destroyControllerInput := juju.DestroyControllerInput{
+				DestroyModels:  true,
+				DestroyStorage: true,
+				Force:          false,
+				MaxWait:        10 * time.Minute,
+				ModelTimeout:   30 * time.Minute,
+			}
+			if err := jujuClient.Controller.DestroyController(ctx, destroyControllerInput); err != nil {
+				log.Error(err, "failed to destroy controller")
 				return ctrl.Result{}, err
 			}
 
@@ -228,6 +285,7 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			}
 
 			// remove our finalizer from the list and update it.
+			log.Info("removing finalizer")
 			controllerutil.RemoveFinalizer(jujuCluster, infrastructurev1beta1.JujuClusterFinalizer)
 			if err := r.Update(ctx, jujuCluster); err != nil {
 				return ctrl.Result{}, err
@@ -235,14 +293,14 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 
 		// Stop reconciliation as the item is being deleted
-		err = jujuAPI.CloseConnections()
-		if err != nil {
-			return ctrl.Result{}, err
-		}
+		log.Info("stopping reconciliation")
 		return ctrl.Result{}, nil
 	}
 
-	cloudExists, err := jujuAPI.CloudExists("capi-vsphere")
+	cloudExistsInput := juju.CloudExistsInput{
+		Name: jujuCluster.Name,
+	}
+	cloudExists, err := jujuClient.Clouds.CloudExists(ctx, cloudExistsInput)
 	if err != nil {
 		log.Error(err, "failed to query existing clouds")
 		return ctrl.Result{}, err
@@ -250,20 +308,7 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	if !cloudExists {
 		log.Info("cloud not found, creating it now")
-		vsphereRegion := cloud.Region{
-			Name:     "Boston",
-			Endpoint: jujuCluster.Spec.Endpoint,
-		}
-
-		vsphereCloud := cloud.Cloud{
-			Name:      "capi-vsphere",
-			Type:      "vsphere",
-			Endpoint:  jujuCluster.Spec.Endpoint,
-			Regions:   []cloud.Region{vsphereRegion},
-			AuthTypes: []cloud.AuthType{"userpass"},
-		}
-
-		err = jujuAPI.AddCloud(vsphereCloud, true)
+		err = createCloud(ctx, jujuCluster, jujuClient)
 		if err != nil {
 			log.Error(err, "failed to add cloud")
 			return ctrl.Result{}, err
@@ -271,22 +316,18 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	// Check if credential has been created yet
-	credentialExists, err := jujuAPI.CredentialExists("capi-vsphere", "capi-vsphere")
+	credExistsInput := juju.CredentialExistsInput{
+		CredentialName: jujuCluster.Name,
+		CloudName:      jujuCluster.Name,
+	}
+	credentialExists, err := jujuClient.Credentials.CredentialExists(ctx, credExistsInput)
 	if err != nil {
 		log.Error(err, "failed to query existing credentials")
 		return ctrl.Result{}, err
 	}
 	if !credentialExists {
 		log.Info("credential not found, creating it now")
-		username := string(cloudSecret.Data["username"][:])
-		password := string(cloudSecret.Data["password"][:])
-		vmfolder := string(cloudSecret.Data["vmfolder"][:])
-		credential := cloud.NewCredential("userpass", map[string]string{
-			"user":     username,
-			"password": password,
-			"vmfolder": vmfolder,
-		})
-		err = jujuAPI.AddCredential(credential, "capi-vsphere", "capi-vsphere")
+		err = createCredential(ctx, cloudSecret, jujuCluster, jujuClient)
 		if err != nil {
 			log.Error(err, "failed to add credential")
 			return ctrl.Result{}, err
@@ -294,18 +335,20 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	// Check if model has been created yet
-	modelExists, err := jujuAPI.ModelExists(jujuCluster.Name)
+	modelExists, err := jujuClient.Models.ModelExists(ctx, jujuCluster.Name)
 	if err != nil {
 		log.Error(err, "failed to query existing models")
 		return ctrl.Result{}, err
 	}
 	if !modelExists {
 		log.Info("model not found, creating it now")
-		err = r.createModel(ctx, cluster, jujuCluster, *jujuAPI)
+		response, err := createModel(ctx, jujuCluster, jujuClient)
 		if err != nil {
 			log.Error(err, "Error creating model")
 			return ctrl.Result{}, err
 		}
+
+		log.Info("created model", "response", response)
 	}
 
 	if !jujuCluster.Status.Ready {
@@ -313,17 +356,14 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
-		log.Info("Patching cluster ready status to true")
+		log.Info("patching cluster ready status to true")
 		jujuCluster.Status.Ready = true
 		if err := helper.Patch(ctx, jujuCluster); err != nil {
 			return ctrl.Result{}, errors.Wrapf(err, "couldn't patch cluster %q", jujuCluster.Name)
 		}
 	}
-	err = jujuAPI.CloseConnections()
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	log.Info("Stopping reconciliation")
+
+	log.Info("stopping reconciliation")
 	return ctrl.Result{}, nil
 }
 
@@ -407,7 +447,7 @@ func (r *JujuClusterReconciler) createJujuControllerResources(ctx context.Contex
 		job,
 	}
 
-	log.Info("Creating resources necessary for bootstrapping juju controller")
+	log.Info("creating resources necessary for bootstrapping juju controller")
 	for _, obj := range objects {
 		if err := r.Create(ctx, obj); err != nil {
 			log.Error(err, "failed to create object")
@@ -481,7 +521,7 @@ func (r *JujuClusterReconciler) deleteJujuControllerResources(ctx context.Contex
 				return err
 			}
 		} else {
-			log.Info(fmt.Sprintf("Deleting %s %s", kind, name))
+			log.Info(fmt.Sprintf("deleting %s %s", kind, name))
 			err = r.Delete(ctx, pair.object, &pair.options)
 			if err != nil {
 				log.Error(err, fmt.Sprintf("%s %s could not be deleted", kind, name))
@@ -604,8 +644,96 @@ func (r *JujuClusterReconciler) createJujuConfigMap(ctx context.Context, cluster
 	return nil
 }
 
-func (r *JujuClusterReconciler) createModel(ctx context.Context, cluster *clusterv1.Cluster, jujuCluster *infrastructurev1beta1.JujuCluster, jujuAPI juju.JujuAPI) error {
-	_ = log.FromContext(ctx)
+func (r *JujuClusterReconciler) getCloudSecret(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster) (*kcore.Secret, error) {
+	// Check if a secret containing cloud user data has been created yet
+	cloudSecret := &kcore.Secret{}
+	objectKey := client.ObjectKey{
+		Namespace: jujuCluster.Namespace,
+		Name:      jujuCluster.Name + "-cloud-secret",
+	}
+	if err := r.Get(ctx, objectKey, cloudSecret); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		} else {
+			return nil, err
+		}
+	}
+
+	return cloudSecret, nil
+}
+
+func (r *JujuClusterReconciler) getBootstrapJob(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster) (*kbatch.Job, error) {
+	job := &kbatch.Job{}
+	objectKey := client.ObjectKey{
+		Namespace: jujuCluster.Namespace,
+		Name:      jujuCluster.Name + "-juju-controller-bootstrap",
+	}
+	if err := r.Get(ctx, objectKey, job); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		} else {
+			return nil, err
+		}
+	}
+	return job, nil
+}
+
+func (r *JujuClusterReconciler) getJujuConfigMap(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster) (*kcore.ConfigMap, error) {
+	jujuConfigMap := &kcore.ConfigMap{}
+	objectKey := client.ObjectKey{
+		Namespace: jujuCluster.Namespace,
+		Name:      jujuCluster.Name + "-juju-controller-config",
+	}
+	if err := r.Get(ctx, objectKey, jujuConfigMap); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		} else {
+			return nil, err
+		}
+	}
+	return jujuConfigMap, nil
+}
+
+func createCloud(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster, client *juju.Client) error {
+	vsphereRegion := cloud.Region{
+		Name:     "Boston",
+		Endpoint: jujuCluster.Spec.CloudEndpoint,
+	}
+
+	vsphereCloud := cloud.Cloud{
+		Name:      jujuCluster.Name,
+		Type:      "vsphere",
+		Endpoint:  jujuCluster.Spec.CloudEndpoint,
+		Regions:   []cloud.Region{vsphereRegion},
+		AuthTypes: []cloud.AuthType{"userpass"},
+	}
+
+	// Force must be true when adding a non-k8s cloud to a in-k8s juju controller
+	addCloudInput := juju.AddCloudInput{
+		Cloud: vsphereCloud,
+		Force: true,
+	}
+	return client.Clouds.AddCloud(ctx, addCloudInput)
+}
+
+func createCredential(ctx context.Context, cloudSecret *kcore.Secret, jujuCluster *infrastructurev1beta1.JujuCluster, client *juju.Client) error {
+	username := string(cloudSecret.Data["username"][:])
+	password := string(cloudSecret.Data["password"][:])
+	vmfolder := string(cloudSecret.Data["vmfolder"][:])
+	credential := cloud.NewCredential("userpass", map[string]string{
+		"user":     username,
+		"password": password,
+		"vmfolder": vmfolder,
+	})
+	addCredInput := juju.AddCredentialInput{
+		Credential:     credential,
+		CredentialName: jujuCluster.Name,
+		CloudName:      jujuCluster.Name,
+	}
+	return client.Credentials.AddCredential(ctx, addCredInput)
+}
+
+func createModel(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster, client *juju.Client) (*juju.CreateModelResponse, error) {
 	config := make(map[string]interface{})
 	config["juju-http-proxy"] = "http://squid.internal:3128"
 	config["apt-http-proxy"] = "http://squid.internal:3128"
@@ -618,21 +746,19 @@ func (r *JujuClusterReconciler) createModel(ctx context.Context, cluster *cluste
 	config["logging-config"] = "<root>=DEBUG"
 	config["datastore"] = "vsanDatastore"
 	config["primary-network"] = "VLAN_2764"
-	input := juju.CreateModelInput{
+	createModelInput := juju.CreateModelInputt{
 		Name:           jujuCluster.Name,
-		Cloud:          "capi-vsphere",
+		Cloud:          jujuCluster.Name,
 		CloudRegion:    "Boston",
-		CredentialName: "capi-vsphere",
+		CredentialName: jujuCluster.Name,
 		Config:         config,
 		Constraints:    constraints.Value{},
 	}
 
-	response, err := jujuAPI.CreateModel(input)
+	response, err := client.Models.CreateModel(ctx, createModelInput)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	log.Log.Info("Created model", "response", response)
-
-	return nil
+	return response, nil
 }

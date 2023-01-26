@@ -27,21 +27,44 @@ const (
 	JujuClusterFinalizer = "juju.cluster.x-k8s.io"
 )
 
+// APIEndpoint represents a reachable Kubernetes API endpoint.
+type APIEndpoint struct {
+	// Host is the hostname on which the API server is serving.
+	Host string `json:"host"`
+
+	// Port is the port on which the API server is serving.
+	Port int `json:"port"`
+}
+
 // JujuClusterSpec defines the desired state of JujuCluster
 type JujuClusterSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
+	// Controller service type defines what type of service will be created for the
+	// juju controller. Should be cluster, loadbalancer, or external
 	//+kubebuilder:default="cluster"
 	ControllerServiceType string `json:"controllerServiceType"`
-	Endpoint              string `json:"endpoint"`
+	CloudEndpoint         string `json:"cloudEndpoint"`
+
+	// Required fields for infra providers
+	// ControlPlaneEndpoint represents the endpoint used to communicate with the control plane.
+	// Expected to eventually be set by the user/controller
+	// +optional
+	ControlPlaneEndpoint APIEndpoint `json:"controlPlaneEndpoint"`
+
+	// Optional fields for infra providers
+	FailureReason  string `json:"failureReason,omitempty"`  // error string for programs
+	FailureMessage string `json:"failureMessage,omitempty"` // error string for humans
 }
 
 // JujuClusterStatus defines the observed state of JujuCluster
 type JujuClusterStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
-	// Ready denotes that the maas cluster (infrastructure) is ready.
+
+	// Required fields for infra providers
+	// Ready denotes that the cluster (infrastructure) is ready.
 	//+kubebuilder:default=false
 	Ready bool `json:"ready"`
 }

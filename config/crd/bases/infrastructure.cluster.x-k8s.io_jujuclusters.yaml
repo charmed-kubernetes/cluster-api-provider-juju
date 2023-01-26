@@ -35,24 +35,45 @@ spec:
           spec:
             description: JujuClusterSpec defines the desired state of JujuCluster
             properties:
+              cloudEndpoint:
+                type: string
+              controlPlaneEndpoint:
+                description: Required fields for infra providers ControlPlaneEndpoint
+                  represents the endpoint used to communicate with the control plane.
+                  Expected to eventually be set by the user/controller
+                properties:
+                  host:
+                    description: Host is the hostname on which the API server is serving.
+                    type: string
+                  port:
+                    description: Port is the port on which the API server is serving.
+                    type: integer
+                required:
+                - host
+                - port
+                type: object
               controllerServiceType:
                 default: cluster
+                description: Controller service type defines what type of service
+                  will be created for the juju controller. Should be cluster, loadbalancer,
+                  or external
                 type: string
-              endpoint:
+              failureMessage:
+                type: string
+              failureReason:
+                description: Optional fields for infra providers
                 type: string
             required:
+            - cloudEndpoint
             - controllerServiceType
-            - endpoint
             type: object
           status:
             description: JujuClusterStatus defines the observed state of JujuCluster
             properties:
               ready:
                 default: false
-                description: 'INSERT ADDITIONAL STATUS FIELD - define observed state
-                  of cluster Important: Run "make" to regenerate code after modifying
-                  this file Ready denotes that the maas cluster (infrastructure) is
-                  ready.'
+                description: Required fields for infra providers Ready denotes that
+                  the cluster (infrastructure) is ready.
                 type: boolean
             required:
             - ready
