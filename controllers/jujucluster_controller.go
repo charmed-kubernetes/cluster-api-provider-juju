@@ -29,6 +29,7 @@ import (
 	"github.com/charmed-kubernetes/cluster-api-provider-juju/juju"
 	"github.com/juju/juju/cloud"
 	"github.com/juju/juju/core/constraints"
+	"github.com/juju/juju/core/life"
 	"github.com/pkg/errors"
 	"gopkg.in/yaml.v3"
 	kbatch "k8s.io/api/batch/v1"
@@ -198,72 +199,32 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 					return ctrl.Result{}, err
 				}
 				if model != nil {
-					if model.Status.Status != "destroying" {
-						modelUUID, err := jujuClient.Models.GetModelUUID(ctx, jujuCluster.Name)
-						if err != nil {
-							log.Error(err, "failed to retrieve modelUUID when attempting to destroy model")
-							return ctrl.Result{}, err
-						}
-
-						if modelUUID != "" {
-							log.Info("destroying model")
-							destroyModelInput := juju.DestroyModelInput{
-								UUID: modelUUID,
-							}
-							if err := jujuClient.Models.DestroyModel(ctx, destroyModelInput); err != nil {
-								log.Error(err, "failed to destroy model")
+					if model.Life == life.Alive {
+						if model.Status.Status != "destroying" {
+							modelUUID, err := jujuClient.Models.GetModelUUID(ctx, jujuCluster.Name)
+							if err != nil {
+								log.Error(err, "failed to retrieve modelUUID when attempting to destroy model")
 								return ctrl.Result{}, err
 							}
-							log.Info("request to destroy model succeeded, requeueing")
-							return ctrl.Result{RequeueAfter: 10 * time.Second}, err
+
+							if modelUUID != "" {
+								log.Info("destroying model")
+								destroyModelInput := juju.DestroyModelInput{
+									UUID: modelUUID,
+								}
+								if err := jujuClient.Models.DestroyModel(ctx, destroyModelInput); err != nil {
+									log.Error(err, "failed to destroy model")
+									return ctrl.Result{}, err
+								}
+								log.Info("request to destroy model succeeded, requeueing")
+								return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+							}
+						} else {
+							log.Info("model is being destroyed, requeueing")
+							return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 						}
-					} else {
-						log.Info("model is being destroyed, requeueing")
-						return ctrl.Result{RequeueAfter: 10 * time.Second}, err
 					}
-
 				}
-			}
-			credExistsInput := juju.CredentialExistsInput{
-				CredentialName: jujuCluster.Name,
-				CloudName:      jujuCluster.Name,
-			}
-			credentialExists, err := jujuClient.Credentials.CredentialExists(ctx, credExistsInput)
-			if err != nil {
-				log.Error(err, "failed to query existing credentials")
-				return ctrl.Result{}, err
-			}
-			if credentialExists {
-				revokeCredInput := juju.RevokeCredentialInput{
-					CredentialName: jujuCluster.Name,
-					CloudName:      jujuCluster.Name,
-				}
-				log.Info("removing credential")
-				if err := jujuClient.Credentials.RevokeCredential(ctx, revokeCredInput); err != nil {
-					log.Error(err, "failed to revoke credential")
-					return ctrl.Result{}, err
-				}
-				log.Info("request to revoke credential succeeded, requeueing")
-				return ctrl.Result{Requeue: true}, err
-
-			}
-
-			cloudExistsInput := juju.CloudExistsInput{
-				Name: jujuCluster.Name,
-			}
-			cloudExists, err := jujuClient.Clouds.CloudExists(ctx, cloudExistsInput)
-			if err != nil {
-				log.Error(err, "failed to query existing clouds")
-				return ctrl.Result{}, err
-			}
-			if cloudExists {
-				log.Info("removing cloud")
-				if err := jujuClient.Clouds.RemoveCloud(ctx, jujuCluster.Name); err != nil {
-					log.Error(err, "failed to remove cloud")
-					return ctrl.Result{}, err
-				}
-				log.Info("request to revoke remove cloud succeeded, requeueing")
-				return ctrl.Result{Requeue: true}, err
 			}
 
 			log.Info("destroying controller")
@@ -278,6 +239,9 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				log.Error(err, "failed to destroy controller")
 				return ctrl.Result{}, err
 			}
+			log.Info("destroy controller request succeeded, sleeping")
+			time.Sleep(20 * time.Minute)
+			log.Info("sleep complete")
 
 			log.Info("deleting juju controller resources")
 			if err := r.deleteJujuControllerResources(ctx, cluster, jujuCluster); err != nil {
