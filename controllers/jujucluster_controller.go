@@ -208,6 +208,30 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 							}
 
 							if modelUUID != "" {
+
+								easyRSAExistsInput := juju.ApplicationExistsInput{
+									ModelUUID:       modelUUID,
+									ApplicationName: "easyrsa",
+								}
+								easyRSAExists, err := jujuClient.Applications.ApplicationExists(ctx, easyRSAExistsInput)
+								if err != nil {
+									log.Error(err, "failed to query existing applications")
+									return ctrl.Result{}, err
+								}
+								if easyRSAExists {
+									log.Info("destroying easyrsa")
+									destroyEasyRSAInput := juju.DestroyApplicationInput{
+										ApplicationName: "easyrsa",
+										ModelUUID:       modelUUID,
+									}
+									if err := jujuClient.Applications.DestroyApplication(ctx, &destroyEasyRSAInput); err != nil {
+										log.Error(err, "failed to destroy easyrsa")
+										return ctrl.Result{}, err
+									}
+									log.Info("request to destroy easyrsa succeeded, requeueing")
+									return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+								}
+
 								log.Info("destroying model")
 								destroyModelInput := juju.DestroyModelInput{
 									UUID: modelUUID,
@@ -239,9 +263,6 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				log.Error(err, "failed to destroy controller")
 				return ctrl.Result{}, err
 			}
-			log.Info("destroy controller request succeeded, sleeping")
-			time.Sleep(20 * time.Minute)
-			log.Info("sleep complete")
 
 			log.Info("deleting juju controller resources")
 			if err := r.deleteJujuControllerResources(ctx, cluster, jujuCluster); err != nil {
@@ -277,6 +298,7 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			log.Error(err, "failed to add cloud")
 			return ctrl.Result{}, err
 		}
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 
 	// Check if credential has been created yet
@@ -296,6 +318,7 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			log.Error(err, "failed to add credential")
 			return ctrl.Result{}, err
 		}
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 
 	// Check if model has been created yet
@@ -313,6 +336,34 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 
 		log.Info("created model", "response", response)
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	}
+
+	modelUUID, err := jujuClient.Models.GetModelUUID(ctx, jujuCluster.Name)
+	if err != nil {
+		log.Error(err, "failed to retrieve modelUUID")
+		return ctrl.Result{}, err
+	}
+	easyRSAExistsInput := juju.ApplicationExistsInput{
+		ModelUUID:       modelUUID,
+		ApplicationName: "easyrsa",
+	}
+	easyRSAExists, err := jujuClient.Applications.ApplicationExists(ctx, easyRSAExistsInput)
+	if err != nil {
+		log.Error(err, "failed to query existing applications")
+		return ctrl.Result{}, err
+	}
+	if !easyRSAExists {
+		log.Info("easyrsa application not found, creating it now")
+		response, err := createEasyRSA(ctx, jujuCluster, jujuClient, modelUUID)
+		if err != nil {
+			log.Error(err, "Error creating easyrsa")
+			return ctrl.Result{}, err
+		}
+		log.Info("created easyrsa", "response", response)
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	} else {
+		log.Info("easyrsa already exists")
 	}
 
 	if !jujuCluster.Status.Ready {
@@ -710,7 +761,7 @@ func createModel(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuClu
 	config["logging-config"] = "<root>=DEBUG"
 	config["datastore"] = "vsanDatastore"
 	config["primary-network"] = "VLAN_2764"
-	createModelInput := juju.CreateModelInputt{
+	createModelInput := juju.CreateModelInput{
 		Name:           jujuCluster.Name,
 		Cloud:          jujuCluster.Name,
 		CloudRegion:    "Boston",
@@ -720,6 +771,33 @@ func createModel(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuClu
 	}
 
 	response, err := client.Models.CreateModel(ctx, createModelInput)
+	if err != nil {
+		return nil, err
+	}
+
+	return response, nil
+}
+
+func createEasyRSA(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster, client *juju.Client, modelUUID string) (*juju.CreateApplicationResponse, error) {
+	log := log.FromContext(ctx)
+	cons, err := constraints.Parse("cores=1", "mem=4G", "root-disk=16G")
+	if err != nil {
+		log.Error(err, "error creating machine constraints")
+		return nil, nil
+	}
+	createApplicationInput := juju.CreateApplicationInput{
+		ApplicationName: "easyrsa",
+		ModelUUID:       modelUUID,
+		CharmName:       "easyrsa",
+		CharmChannel:    "1.26/stable",
+		CharmBase:       "ubuntu@22.04",
+		CharmRevision:   32,
+		Units:           1,
+		Trust:           true,
+		Constraints:     cons,
+	}
+
+	response, err := client.Applications.CreateApplication(ctx, &createApplicationInput)
 	if err != nil {
 		return nil, err
 	}

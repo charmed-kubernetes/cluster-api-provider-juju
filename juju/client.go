@@ -10,8 +10,9 @@ import (
 )
 
 const (
-	PrefixUser        = "user-"
-	connectionTimeout = 10 * time.Minute
+	PrefixUser          = "user-"
+	connectionTimeout   = 10 * time.Minute
+	UnspecifiedRevision = -1
 )
 
 type Configuration struct {
@@ -22,11 +23,12 @@ type Configuration struct {
 }
 
 type Client struct {
-	Models      modelsClient
-	Clouds      cloudsClient
-	Credentials credentialsClient
-	Machines    machinesClient
-	Controller  controllerClient
+	Models       modelsClient
+	Clouds       cloudsClient
+	Credentials  credentialsClient
+	Machines     machinesClient
+	Controller   controllerClient
+	Applications applicationsClient
 }
 
 type ConnectionFactory struct {
@@ -39,11 +41,12 @@ func NewClient(config Configuration) (*Client, error) {
 	}
 
 	return &Client{
-		Models:      *newModelsClient(cf),
-		Clouds:      *newCloudsClient(cf),
-		Credentials: *newCredentialsClient(cf),
-		Machines:    *newMachinesClient(cf),
-		Controller:  *newControllerClient(cf),
+		Models:       *newModelsClient(cf),
+		Clouds:       *newCloudsClient(cf),
+		Credentials:  *newCredentialsClient(cf),
+		Machines:     *newMachinesClient(cf),
+		Controller:   *newControllerClient(cf),
+		Applications: *newApplicationClient(cf),
 	}, nil
 }
 
