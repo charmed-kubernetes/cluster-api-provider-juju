@@ -513,6 +513,7 @@ func (c applicationsClient) ApplicationExists(ctx context.Context, input Applica
 }
 
 func (c applicationsClient) AreApplicationUnitsActiveIdle(ctx context.Context, input ReadApplicationInput) (bool, error) {
+	log := log.FromContext(ctx)
 	readAppResponse, err := c.ReadApplication(ctx, &input)
 	if err != nil {
 		return false, err
@@ -520,6 +521,7 @@ func (c applicationsClient) AreApplicationUnitsActiveIdle(ctx context.Context, i
 
 	for _, unit := range readAppResponse.Status.Units {
 		if unit.WorkloadStatus.Status != "active" || unit.AgentStatus.Status != "idle" {
+			log.Info("unit is not active/idle", "app status", readAppResponse.Status)
 			return false, nil
 		}
 	}
@@ -540,4 +542,19 @@ func (c applicationsClient) GetLeaderAddress(ctx context.Context, input ReadAppl
 	}
 
 	return nil, nil
+}
+
+func (c applicationsClient) GetApplicationsStatus(ctx context.Context, modelUUID string) (map[string]params.ApplicationStatus, error) {
+	conn, err := c.GetConnection(ctx, &modelUUID)
+	if err != nil {
+		return nil, err
+	}
+	client := apiclient.NewClient(conn)
+	defer client.Close()
+
+	status, err := client.Status(nil)
+	if err != nil {
+		return nil, err
+	}
+	return status.Applications, nil
 }
