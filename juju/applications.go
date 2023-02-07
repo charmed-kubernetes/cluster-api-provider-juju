@@ -61,6 +61,7 @@ type ReadApplicationResponse struct {
 	Constraints constraints.Value
 	Expose      map[string]interface{}
 	Principal   bool
+	Status      params.ApplicationStatus
 }
 
 type DestroyApplicationInput struct {
@@ -154,13 +155,11 @@ func (c applicationsClient) CreateApplication(ctx context.Context, input *Create
 	if err != nil {
 		return nil, err
 	}
-	log.Info("parsed channel", "channel", channel)
 
 	charmURL, err := resolveCharmURL(input.CharmName)
 	if err != nil {
 		return nil, err
 	}
-	log.Info("resolved charm URL", "URL", charmURL)
 
 	if charmURL.Revision != UnspecifiedRevision {
 		return nil, fmt.Errorf("cannot specify revision in a charm or bundle name")
@@ -179,19 +178,16 @@ func (c applicationsClient) CreateApplication(ctx context.Context, input *Create
 	if err != nil {
 		return nil, err
 	}
-	log.Info("parsed base", "base", base)
 
 	series, err := coreseries.GetSeriesFromBase(base)
 	if err != nil {
 		return nil, err
 	}
-	log.Info("series from base", "series", series)
 
 	platform, err := utils.DeducePlatform(constraints.Value{}, series, modelConstraints)
 	if err != nil {
 		return nil, err
 	}
-	log.Info("deduced platform", "platform", platform)
 
 	urlForOrigin := charmURL
 	if input.CharmRevision != UnspecifiedRevision {
@@ -201,7 +197,6 @@ func (c applicationsClient) CreateApplication(ctx context.Context, input *Create
 	if err != nil {
 		return nil, err
 	}
-	log.Info("deduced charm origin", "origin", origin)
 	// Charm or bundle has been supplied as a URL so we resolve and
 	// deploy using the store but pass in the origin command line
 	// argument so users can target a specific origin.
@@ -218,8 +213,6 @@ func (c applicationsClient) CreateApplication(ctx context.Context, input *Create
 		log.Info("Error when resolving charm", "charm", resolvedCharm)
 		return nil, resolvedCharm.Error
 	}
-
-	log.Info("resolved charm", "charm", resolvedCharm)
 
 	// Add the charm to the model
 	origin = resolvedCharm.Origin.WithBase(&base)
@@ -460,6 +453,7 @@ func (c applicationsClient) ReadApplication(ctx context.Context, input *ReadAppl
 		Config:      conf,
 		Constraints: appConstraints,
 		Principal:   appInfo.Principal,
+		Status:      appStatus,
 	}
 
 	return response, nil
@@ -491,7 +485,6 @@ func (c applicationsClient) DestroyApplication(ctx context.Context, input *Destr
 }
 
 func (c applicationsClient) ApplicationExists(ctx context.Context, input ApplicationExistsInput) (bool, error) {
-	log := log.FromContext(ctx)
 	conn, err := c.GetConnection(ctx, &input.ModelUUID)
 	if err != nil {
 		return false, err
@@ -501,24 +494,50 @@ func (c applicationsClient) ApplicationExists(ctx context.Context, input Applica
 	defer applicationAPIClient.Close()
 
 	apps, err := applicationAPIClient.ApplicationsInfo([]names.ApplicationTag{names.NewApplicationTag(input.ApplicationName)})
-	log.Info("checking if application exists", "apps", apps)
 	if err != nil {
 		return false, err
 	}
 	if len(apps) < 1 {
-		log.Info("apps is empty, returning false")
 		return false, nil
 	}
 
 	if apps[0].Error != nil {
 		if apps[0].Error.Code == "not found" {
-			log.Info("app was not found, returning false")
 			return false, nil
 		} else {
 			return false, apps[0].Error
 		}
 	}
 
-	log.Info("apps is not empty, returning true")
 	return true, nil
+}
+
+func (c applicationsClient) AreApplicationUnitsActiveIdle(ctx context.Context, input ReadApplicationInput) (bool, error) {
+	readAppResponse, err := c.ReadApplication(ctx, &input)
+	if err != nil {
+		return false, err
+	}
+
+	for _, unit := range readAppResponse.Status.Units {
+		if unit.WorkloadStatus.Status != "active" || unit.AgentStatus.Status != "idle" {
+			return false, nil
+		}
+	}
+
+	return true, nil
+}
+
+func (c applicationsClient) GetLeaderAddress(ctx context.Context, input ReadApplicationInput) (*string, error) {
+	readAppResponse, err := c.ReadApplication(ctx, &input)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, unit := range readAppResponse.Status.Units {
+		if unit.Leader {
+			return &unit.PublicAddress, nil
+		}
+	}
+
+	return nil, nil
 }

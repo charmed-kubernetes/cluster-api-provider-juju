@@ -232,6 +232,29 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 									return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 								}
 
+								loadBalancerExistsInput := juju.ApplicationExistsInput{
+									ModelUUID:       modelUUID,
+									ApplicationName: "kubeapi-load-balancer",
+								}
+								loadBalancerExists, err := jujuClient.Applications.ApplicationExists(ctx, loadBalancerExistsInput)
+								if err != nil {
+									log.Error(err, "failed to query existing applications")
+									return ctrl.Result{}, err
+								}
+								if loadBalancerExists {
+									log.Info("destroying kubeapi-load-balancer")
+									destroyLoadBalancerInput := juju.DestroyApplicationInput{
+										ApplicationName: "kubeapi-load-balancer",
+										ModelUUID:       modelUUID,
+									}
+									if err := jujuClient.Applications.DestroyApplication(ctx, &destroyLoadBalancerInput); err != nil {
+										log.Error(err, "failed to destroy kubeapi-load-balancer")
+										return ctrl.Result{}, err
+									}
+									log.Info("request to destroy kubeapi-load-balancer succeeded, requeueing")
+									return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+								}
+
 								log.Info("destroying model")
 								destroyModelInput := juju.DestroyModelInput{
 									UUID: modelUUID,
@@ -344,6 +367,7 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		log.Error(err, "failed to retrieve modelUUID")
 		return ctrl.Result{}, err
 	}
+
 	easyRSAExistsInput := juju.ApplicationExistsInput{
 		ModelUUID:       modelUUID,
 		ApplicationName: "easyrsa",
@@ -362,8 +386,141 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 		log.Info("created easyrsa", "response", response)
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
-	} else {
-		log.Info("easyrsa already exists")
+	}
+
+	loadBalancerExistsInput := juju.ApplicationExistsInput{
+		ModelUUID:       modelUUID,
+		ApplicationName: "kubeapi-load-balancer",
+	}
+	loadBalancerExists, err := jujuClient.Applications.ApplicationExists(ctx, loadBalancerExistsInput)
+	if err != nil {
+		log.Error(err, "failed to query existing applications")
+		return ctrl.Result{}, err
+	}
+	if !loadBalancerExists {
+		log.Info("kubeapi-load-balancer application not found, creating it now")
+		response, err := createKubeAPILoadBalancer(ctx, jujuCluster, jujuClient, modelUUID)
+		if err != nil {
+			log.Error(err, "Error creating kubeapi-load-balancer")
+			return ctrl.Result{}, err
+		}
+		log.Info("created kubeapi-load-balancer", "response", response)
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	}
+
+	controlPlaneExistsInput := juju.ApplicationExistsInput{
+		ModelUUID:       modelUUID,
+		ApplicationName: "kubernetes-control-plane",
+	}
+	controlPlaneExists, err := jujuClient.Applications.ApplicationExists(ctx, controlPlaneExistsInput)
+	if err != nil {
+		log.Error(err, "failed to query existing applications")
+		return ctrl.Result{}, err
+	}
+	if !controlPlaneExists {
+		log.Info("control plane application not found, creating it now")
+		response, err := createControlPlane(ctx, jujuCluster, jujuClient, modelUUID)
+		if err != nil {
+			log.Error(err, "Error creating control plane application")
+			return ctrl.Result{}, err
+		}
+		log.Info("created control plane application", "response", response)
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	}
+
+	workerExistsInput := juju.ApplicationExistsInput{
+		ModelUUID:       modelUUID,
+		ApplicationName: "kubernetes-worker",
+	}
+	workerExists, err := jujuClient.Applications.ApplicationExists(ctx, workerExistsInput)
+	if err != nil {
+		log.Error(err, "failed to query existing applications")
+		return ctrl.Result{}, err
+	}
+	if !workerExists {
+		log.Info("worker application not found, creating it now")
+		response, err := createWorker(ctx, jujuCluster, jujuClient, modelUUID)
+		if err != nil {
+			log.Error(err, "Error creating worker application")
+			return ctrl.Result{}, err
+		}
+		log.Info("created worker application", "response", response)
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	}
+
+	etcdExistsInput := juju.ApplicationExistsInput{
+		ModelUUID:       modelUUID,
+		ApplicationName: "etcd",
+	}
+	etcdExists, err := jujuClient.Applications.ApplicationExists(ctx, etcdExistsInput)
+	if err != nil {
+		log.Error(err, "failed to query existing applications")
+		return ctrl.Result{}, err
+	}
+	if !etcdExists {
+		log.Info("etcd application not found, creating it now")
+		response, err := createEtcd(ctx, jujuCluster, jujuClient, modelUUID)
+		if err != nil {
+			log.Error(err, "Error creating etcd application")
+			return ctrl.Result{}, err
+		}
+		log.Info("created etcd application", "response", response)
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	}
+
+	err = createIntegrationsIfNeeded(ctx, jujuCluster, jujuClient, modelUUID)
+	if err != nil {
+		log.Error(err, "error creating integrations")
+		return ctrl.Result{}, err
+	}
+
+	readEasyRSAInput := juju.ReadApplicationInput{
+		ModelUUID:       modelUUID,
+		ApplicationName: "easyrsa",
+	}
+	easyRSAActiveIdle, err := jujuClient.Applications.AreApplicationUnitsActiveIdle(ctx, readEasyRSAInput)
+	if err != nil {
+		log.Error(err, "Error querying easyrsa unit status")
+		return ctrl.Result{}, err
+	}
+	if !easyRSAActiveIdle {
+		log.Info("easyrsa units are not yet active/idle, requeueing")
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	}
+
+	readLoadBalancerInput := juju.ReadApplicationInput{
+		ModelUUID:       modelUUID,
+		ApplicationName: "kubeapi-load-balancer",
+	}
+	loadBalancerActiveIdle, err := jujuClient.Applications.AreApplicationUnitsActiveIdle(ctx, readLoadBalancerInput)
+	if err != nil {
+		log.Error(err, "Error querying kubeapi-load-balancer unit status")
+		return ctrl.Result{}, err
+	}
+	if !loadBalancerActiveIdle {
+		log.Info("kubeapi-load-balancer units are not yet active/idle, requeueing")
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	}
+
+	if jujuCluster.Spec.ControlPlaneEndpoint.Host == "" {
+		log.Info("cluster control plane endpoint host was empty, setting it now")
+		address, err := getLoadBalancerAddresss(ctx, jujuCluster, jujuClient, modelUUID)
+		if err != nil {
+			log.Error(err, "error retreiving load balancer address")
+			return ctrl.Result{}, err
+		}
+		if address == nil {
+			log.Error(err, "load balancer address was nil")
+			return ctrl.Result{}, fmt.Errorf("load balancer address is nil")
+		}
+		jujuCluster.Spec.ControlPlaneEndpoint.Host = *address
+		jujuCluster.Spec.ControlPlaneEndpoint.Port = 443
+		if err := r.Update(ctx, jujuCluster); err != nil {
+			log.Error(err, "error updating control plane endpoint")
+			return ctrl.Result{}, err
+		}
+		log.Info("successfully updated JujuCluster", "Spec.ControlPlaneEndpoint", jujuCluster.Spec.ControlPlaneEndpoint)
+		return ctrl.Result{}, nil
 	}
 
 	if !jujuCluster.Status.Ready {
@@ -803,4 +960,161 @@ func createEasyRSA(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuC
 	}
 
 	return response, nil
+}
+
+func createKubeAPILoadBalancer(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster, client *juju.Client, modelUUID string) (*juju.CreateApplicationResponse, error) {
+	log := log.FromContext(ctx)
+	cons, err := constraints.Parse("cores=1", "mem=4G", "root-disk=16G")
+	if err != nil {
+		log.Error(err, "error creating machine constraints")
+		return nil, nil
+	}
+	createApplicationInput := juju.CreateApplicationInput{
+		ApplicationName: "kubeapi-load-balancer",
+		ModelUUID:       modelUUID,
+		CharmName:       "kubeapi-load-balancer",
+		CharmChannel:    "1.26/stable",
+		CharmBase:       "ubuntu@22.04",
+		CharmRevision:   53,
+		Units:           1,
+		Trust:           true,
+		Constraints:     cons,
+	}
+
+	response, err := client.Applications.CreateApplication(ctx, &createApplicationInput)
+	if err != nil {
+		return nil, err
+	}
+
+	return response, nil
+}
+
+func getLoadBalancerAddresss(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster, client *juju.Client, modelUUID string) (*string, error) {
+	readLoadBalancerInput := juju.ReadApplicationInput{
+		ModelUUID:       modelUUID,
+		ApplicationName: "kubeapi-load-balancer",
+	}
+	address, err := client.Applications.GetLeaderAddress(ctx, readLoadBalancerInput)
+	if err != nil {
+		return nil, err
+	}
+
+	return address, nil
+}
+
+func createControlPlane(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster, client *juju.Client, modelUUID string) (*juju.CreateApplicationResponse, error) {
+	createApplicationInput := juju.CreateApplicationInput{
+		ApplicationName: "kubernetes-control-plane",
+		ModelUUID:       modelUUID,
+		CharmName:       "kubernetes-control-plane",
+		CharmChannel:    "1.26/stable",
+		CharmBase:       "ubuntu@22.04",
+		CharmRevision:   231,
+		Units:           0,
+		Trust:           true,
+	}
+
+	response, err := client.Applications.CreateApplication(ctx, &createApplicationInput)
+	if err != nil {
+		return nil, err
+	}
+
+	return response, nil
+}
+
+func createWorker(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster, client *juju.Client, modelUUID string) (*juju.CreateApplicationResponse, error) {
+	createApplicationInput := juju.CreateApplicationInput{
+		ApplicationName: "kubernetes-worker",
+		ModelUUID:       modelUUID,
+		CharmName:       "kubernetes-worker",
+		CharmChannel:    "1.26/stable",
+		CharmBase:       "ubuntu@22.04",
+		CharmRevision:   87,
+		Units:           0,
+		Trust:           true,
+	}
+
+	response, err := client.Applications.CreateApplication(ctx, &createApplicationInput)
+	if err != nil {
+		return nil, err
+	}
+
+	return response, nil
+}
+
+func createEtcd(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster, client *juju.Client, modelUUID string) (*juju.CreateApplicationResponse, error) {
+	createApplicationInput := juju.CreateApplicationInput{
+		ApplicationName: "etcd",
+		ModelUUID:       modelUUID,
+		CharmName:       "etcd",
+		CharmChannel:    "1.26/stable",
+		CharmBase:       "ubuntu@22.04",
+		CharmRevision:   724,
+		Units:           0,
+		Trust:           true,
+	}
+
+	response, err := client.Applications.CreateApplication(ctx, &createApplicationInput)
+	if err != nil {
+		return nil, err
+	}
+
+	return response, nil
+}
+
+func createIntegrationsIfNeeded(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster, client *juju.Client, modelUUID string) error {
+	log := log.FromContext(ctx)
+	integrationInputs := []juju.IntegrationInput{
+		{
+			ModelUUID: modelUUID,
+			Endpoints: []string{"kubeapi-load-balancer:certificates", "easyrsa:client"},
+		},
+		{
+			ModelUUID: modelUUID,
+			Endpoints: []string{"kubernetes-control-plane:certificates", "easyrsa:client"},
+		},
+		{
+			ModelUUID: modelUUID,
+			Endpoints: []string{"kubernetes-worker:certificates", "easyrsa:client"},
+		},
+		{
+			ModelUUID: modelUUID,
+			Endpoints: []string{"etcd:certificates", "easyrsa:client"},
+		},
+		{
+			ModelUUID: modelUUID,
+			Endpoints: []string{"kubernetes-control-plane:etcd", "etcd:db"},
+		},
+		{
+			ModelUUID: modelUUID,
+			Endpoints: []string{"kubernetes-control-plane:kube-control", "kubernetes-worker:kube-control"},
+		},
+		{
+			ModelUUID: modelUUID,
+			Endpoints: []string{"kubernetes-control-plane:loadbalancer-external", "kubeapi-load-balancer:lb-consumers"},
+		},
+		{
+			ModelUUID: modelUUID,
+			Endpoints: []string{"kubernetes-control-plane:loadbalancer-internal", "kubeapi-load-balancer:lb-consumers"},
+		},
+	}
+
+	for _, integrationInput := range integrationInputs {
+		integrationExists, err := client.Integrations.IntegrationExists(ctx, &integrationInput)
+		if err != nil {
+			log.Error(err, fmt.Sprintf("Error querying existing integrations for integration: %+v", integrationInput))
+			return err
+		}
+		if !integrationExists {
+			log.Info("integration not found, creating it now", "integration", integrationInput)
+			response, err := client.Integrations.CreateIntegration(ctx, &integrationInput)
+			if err != nil {
+				log.Error(err, fmt.Sprintf("error creating integration %+v", integrationInput))
+				return err
+			}
+			log.Info("created integration", "integration", integrationInput, "response", response)
+		}
+	}
+
+	return nil
 }

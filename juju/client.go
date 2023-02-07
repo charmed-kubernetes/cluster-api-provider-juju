@@ -29,6 +29,7 @@ type Client struct {
 	Machines     machinesClient
 	Controller   controllerClient
 	Applications applicationsClient
+	Integrations integrationsClient
 }
 
 type ConnectionFactory struct {
@@ -47,6 +48,7 @@ func NewClient(config Configuration) (*Client, error) {
 		Machines:     *newMachinesClient(cf),
 		Controller:   *newControllerClient(cf),
 		Applications: *newApplicationClient(cf),
+		Integrations: *newIntegrationsClient(cf),
 	}, nil
 }
 
