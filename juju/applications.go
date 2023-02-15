@@ -31,7 +31,7 @@ type CreateApplicationInput struct {
 	CharmName       string
 	CharmChannel    string
 	CharmBase       string
-	CharmRevision   int
+	CharmRevision   *int
 	Units           int
 	Trust           bool
 	Expose          map[string]interface{}
@@ -118,7 +118,6 @@ func resolveCharmURL(charmName string) (*charm.URL, error) {
 }
 
 func (c applicationsClient) CreateApplication(ctx context.Context, input *CreateApplicationInput) (*CreateApplicationResponse, error) {
-	log := log.FromContext(ctx)
 	conn, err := c.GetConnection(ctx, &input.ModelUUID)
 	if err != nil {
 		return nil, err
@@ -126,9 +125,6 @@ func (c applicationsClient) CreateApplication(ctx context.Context, input *Create
 
 	charmsAPIClient := apicharms.NewClient(conn)
 	defer charmsAPIClient.Close()
-
-	clientAPIClient := apiclient.NewClient(conn)
-	defer clientAPIClient.Close()
 
 	applicationAPIClient := apiapplication.NewClient(conn)
 	defer applicationAPIClient.Close()
@@ -160,11 +156,10 @@ func (c applicationsClient) CreateApplication(ctx context.Context, input *Create
 	if err != nil {
 		return nil, err
 	}
-
 	if charmURL.Revision != UnspecifiedRevision {
 		return nil, fmt.Errorf("cannot specify revision in a charm or bundle name")
 	}
-	if input.CharmRevision != UnspecifiedRevision && channel.Empty() {
+	if input.CharmRevision != nil && channel.Empty() {
 		return nil, fmt.Errorf("specifying a revision requires a channel for future upgrades")
 	}
 
@@ -190,8 +185,8 @@ func (c applicationsClient) CreateApplication(ctx context.Context, input *Create
 	}
 
 	urlForOrigin := charmURL
-	if input.CharmRevision != UnspecifiedRevision {
-		urlForOrigin = urlForOrigin.WithRevision(input.CharmRevision)
+	if input.CharmRevision != nil {
+		urlForOrigin = urlForOrigin.WithRevision(*input.CharmRevision)
 	}
 	origin, err := utils.DeduceOrigin(urlForOrigin, channel, platform)
 	if err != nil {
@@ -210,7 +205,6 @@ func (c applicationsClient) CreateApplication(ctx context.Context, input *Create
 	resolvedCharm := resolved[0]
 
 	if resolvedCharm.Error != nil {
-		log.Info("Error when resolving charm", "charm", resolvedCharm)
 		return nil, resolvedCharm.Error
 	}
 
@@ -218,8 +212,8 @@ func (c applicationsClient) CreateApplication(ctx context.Context, input *Create
 	origin = resolvedCharm.Origin.WithBase(&base)
 
 	var deployRevision int
-	if input.CharmRevision > -1 {
-		deployRevision = input.CharmRevision
+	if input.CharmRevision != nil {
+		deployRevision = *input.CharmRevision
 	} else {
 		if origin.Revision != nil {
 			deployRevision = *origin.Revision
@@ -345,9 +339,6 @@ func (c applicationsClient) ReadApplication(ctx context.Context, input *ReadAppl
 
 	applicationAPIClient := apiapplication.NewClient(conn)
 	defer applicationAPIClient.Close()
-
-	charmsAPIClient := apicharms.NewClient(conn)
-	defer charmsAPIClient.Close()
 
 	clientAPIClient := apiclient.NewClient(conn)
 	defer clientAPIClient.Close()

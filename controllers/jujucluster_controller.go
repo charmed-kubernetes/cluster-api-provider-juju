@@ -256,6 +256,9 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 								}
 								log.Info("request to destroy model succeeded, requeueing")
 								return ctrl.Result{RequeueAfter: requeueTime}, nil
+							} else {
+								log.Error(nil, "model was alive and in a non-destroying state, but the model UUID returned was nil", "model", jujuCluster.Name)
+								return ctrl.Result{RequeueAfter: requeueTime}, nil
 							}
 						} else {
 							log.Info("model is being destroyed, requeueing")
@@ -409,7 +412,7 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	if jujuCluster.Spec.ControlPlaneEndpoint.Host == "" {
 		log.Info("cluster control plane endpoint host was empty, setting it now")
-		address, err := getLoadBalancerAddresss(ctx, jujuCluster, jujuClient, modelUUID)
+		address, err := getLoadBalancerAddress(ctx, jujuCluster, jujuClient, modelUUID)
 		if err != nil {
 			log.Error(err, "error retreiving load balancer address")
 			return ctrl.Result{}, err
@@ -840,7 +843,7 @@ func createModel(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuClu
 	return response, nil
 }
 
-func getLoadBalancerAddresss(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster, client *juju.Client, modelUUID string) (*string, error) {
+func getLoadBalancerAddress(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster, client *juju.Client, modelUUID string) (*string, error) {
 	readLoadBalancerInput := juju.ReadApplicationInput{
 		ModelUUID:       modelUUID,
 		ApplicationName: "kubeapi-load-balancer",
@@ -934,9 +937,7 @@ func createApplicationsIfNeeded(ctx context.Context, jujuCluster *infrastructure
 			CharmName:       "easyrsa",
 			CharmChannel:    "1.26/stable",
 			CharmBase:       "ubuntu@22.04",
-			CharmRevision:   32,
 			Units:           1,
-			Trust:           true,
 			Constraints:     easyRSACons,
 		},
 		{
@@ -945,9 +946,7 @@ func createApplicationsIfNeeded(ctx context.Context, jujuCluster *infrastructure
 			CharmName:       "kubeapi-load-balancer",
 			CharmChannel:    "1.26/stable",
 			CharmBase:       "ubuntu@22.04",
-			CharmRevision:   53,
 			Units:           1,
-			Trust:           true,
 			Constraints:     lbCons,
 		},
 		{
@@ -956,9 +955,7 @@ func createApplicationsIfNeeded(ctx context.Context, jujuCluster *infrastructure
 			CharmName:       "kubernetes-control-plane",
 			CharmChannel:    "1.26/stable",
 			CharmBase:       "ubuntu@22.04",
-			CharmRevision:   231,
 			Units:           0,
-			Trust:           true,
 		},
 		{
 			ApplicationName: "kubernetes-worker",
@@ -966,9 +963,7 @@ func createApplicationsIfNeeded(ctx context.Context, jujuCluster *infrastructure
 			CharmName:       "kubernetes-worker",
 			CharmChannel:    "1.26/stable",
 			CharmBase:       "ubuntu@22.04",
-			CharmRevision:   87,
 			Units:           0,
-			Trust:           true,
 		},
 		{
 			ApplicationName: "etcd",
@@ -976,9 +971,7 @@ func createApplicationsIfNeeded(ctx context.Context, jujuCluster *infrastructure
 			CharmName:       "etcd",
 			CharmChannel:    "1.26/stable",
 			CharmBase:       "ubuntu@22.04",
-			CharmRevision:   724,
 			Units:           0,
-			Trust:           true,
 		},
 	}
 

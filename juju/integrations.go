@@ -87,9 +87,6 @@ func (c integrationsClient) IntegrationExists(ctx context.Context, input *Integr
 		return false, err
 	}
 
-	client := apiapplication.NewClient(conn)
-	defer client.Close()
-
 	status, err := getStatus(conn)
 	if err != nil {
 		return false, err
