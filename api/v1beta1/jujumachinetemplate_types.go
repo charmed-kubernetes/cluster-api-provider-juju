@@ -18,12 +18,17 @@ package v1beta1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 )
 
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
 type JujuMachineTemplateResource struct {
+	// Standard object's metadata.
+	// More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata
+	// +optional
+	ObjectMeta clusterv1.ObjectMeta `json:"metadata,omitempty"`
 	// Spec is the specification of the desired behavior of the machine.
 	Spec JujuMachineSpec `json:"spec"`
 }
@@ -36,22 +41,16 @@ type JujuMachineTemplateSpec struct {
 	Template JujuMachineTemplateResource `json:"template"`
 }
 
-// JujuMachineTemplateStatus defines the observed state of JujuMachineTemplate
-type JujuMachineTemplateStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-}
-
 //+kubebuilder:object:root=true
-//+kubebuilder:subresource:status
+//+kubebuilder:resource:path=jujumachinetemplates,scope=Namespaced,categories=cluster-api,shortName=jmt
+//+kubebuilder:storageversion
 
 // JujuMachineTemplate is the Schema for the jujumachinetemplates API
 type JujuMachineTemplate struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   JujuMachineTemplateSpec   `json:"spec,omitempty"`
-	Status JujuMachineTemplateStatus `json:"status,omitempty"`
+	Spec JujuMachineTemplateSpec `json:"spec,omitempty"`
 }
 
 //+kubebuilder:object:root=true

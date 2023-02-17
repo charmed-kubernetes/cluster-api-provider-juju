@@ -9,9 +9,13 @@ metadata:
 spec:
   group: infrastructure.cluster.x-k8s.io
   names:
+    categories:
+    - cluster-api
     kind: JujuMachineTemplate
     listKind: JujuMachineTemplateList
     plural: jujumachinetemplates
+    shortNames:
+    - jmt
     singular: jujumachinetemplate
   scope: Namespaced
   versions:
@@ -38,10 +42,35 @@ spec:
             properties:
               template:
                 properties:
+                  metadata:
+                    description: 'Standard object''s metadata. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata'
+                    properties:
+                      annotations:
+                        additionalProperties:
+                          type: string
+                        description: 'Annotations is an unstructured key value map
+                          stored with a resource that may be set by external tools
+                          to store and retrieve arbitrary metadata. They are not queryable
+                          and should be preserved when modifying objects. More info:
+                          http://kubernetes.io/docs/user-guide/annotations'
+                        type: object
+                      labels:
+                        additionalProperties:
+                          type: string
+                        description: 'Map of string keys and values that can be used
+                          to organize and categorize (scope and select) objects. May
+                          match selectors of replication controllers and services.
+                          More info: http://kubernetes.io/docs/user-guide/labels'
+                        type: object
+                    type: object
                   spec:
                     description: Spec is the specification of the desired behavior
                       of the machine.
                     properties:
+                      constraints:
+                        description: 'Constraints for the machine specified as a comma-separated
+                          string of key-value pairs Example: "cores=2,mem=8G,root-disk=16G"'
+                        type: string
                       machineID:
                         description: Machine holds a pointer the ID of the machine
                           that is returned when a machine gets created by the Juju
@@ -59,11 +88,6 @@ spec:
             required:
             - template
             type: object
-          status:
-            description: JujuMachineTemplateStatus defines the observed state of JujuMachineTemplate
-            type: object
         type: object
     served: true
     storage: true
-    subresources:
-      status: {}
