@@ -1,0 +1,12 @@
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: JujuMachineTemplate
+metadata:
+  labels:
+    app.kubernetes.io/name: jujumachinetemplate
+    app.kubernetes.io/instance: jujumachinetemplate-sample
+    app.kubernetes.io/part-of: cluster-api-provider-juju
+    app.kuberentes.io/managed-by: kustomize
+    app.kubernetes.io/created-by: cluster-api-provider-juju
+  name: jujumachinetemplate-sample
+spec:
+  # TODO(user): Add fields here

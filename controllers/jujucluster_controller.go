@@ -29,6 +29,7 @@ import (
 	"github.com/charmed-kubernetes/cluster-api-provider-juju/juju"
 	"github.com/juju/juju/cloud"
 	"github.com/juju/juju/core/constraints"
+	"github.com/juju/juju/core/life"
 	"github.com/pkg/errors"
 	"gopkg.in/yaml.v3"
 	kbatch "k8s.io/api/batch/v1"
@@ -48,6 +49,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
+
+const requeueTime = 10 * time.Second
 
 // JujuConfig is used for parsing necessary config values from juju-client output
 type JujuConfig struct {
@@ -135,7 +138,7 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			return ctrl.Result{}, err
 		}
 		// Give it some time to create the job
-		return ctrl.Result{RequeueAfter: 20 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: requeueTime}, nil
 	}
 
 	// Ensure the job has completed
@@ -198,72 +201,71 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 					return ctrl.Result{}, err
 				}
 				if model != nil {
-					if model.Status.Status != "destroying" {
-						modelUUID, err := jujuClient.Models.GetModelUUID(ctx, jujuCluster.Name)
-						if err != nil {
-							log.Error(err, "failed to retrieve modelUUID when attempting to destroy model")
-							return ctrl.Result{}, err
-						}
-
-						if modelUUID != "" {
-							log.Info("destroying model")
-							destroyModelInput := juju.DestroyModelInput{
-								UUID: modelUUID,
-							}
-							if err := jujuClient.Models.DestroyModel(ctx, destroyModelInput); err != nil {
-								log.Error(err, "failed to destroy model")
+					if model.Life == life.Alive {
+						if model.Status.Status != "destroying" {
+							modelUUID, err := jujuClient.Models.GetModelUUID(ctx, jujuCluster.Name)
+							if err != nil {
+								log.Error(err, "failed to retrieve modelUUID when attempting to destroy model")
 								return ctrl.Result{}, err
 							}
-							log.Info("request to destroy model succeeded, requeueing")
-							return ctrl.Result{RequeueAfter: 10 * time.Second}, err
+
+							if modelUUID != "" {
+								// Neither the applications API nor the model API provide a way of getting at existing apps directly,
+								// so we check status here to get application names
+								appStatuses, err := jujuClient.Applications.GetApplicationsStatus(ctx, modelUUID)
+								if err != nil {
+									log.Error(err, "failed to get application statuses")
+									return ctrl.Result{}, err
+								}
+								destroyedApps := []string{}
+								for appName := range appStatuses {
+									appExistsInput := juju.ApplicationExistsInput{
+										ModelUUID:       modelUUID,
+										ApplicationName: appName,
+									}
+									appExists, err := jujuClient.Applications.ApplicationExists(ctx, appExistsInput)
+									if err != nil {
+										log.Error(err, fmt.Sprintf("failed to query existing applications while checking if application %s exists", appName))
+										return ctrl.Result{}, err
+									}
+									if appExists {
+										log.Info(fmt.Sprintf("destroying %s", appName))
+										destroyAppInput := juju.DestroyApplicationInput{
+											ApplicationName: appName,
+											ModelUUID:       modelUUID,
+										}
+										if err := jujuClient.Applications.DestroyApplication(ctx, &destroyAppInput); err != nil {
+											log.Error(err, fmt.Sprintf("failed to destroy %s", appName))
+											return ctrl.Result{}, err
+										}
+										destroyedApps = append(destroyedApps, appName)
+									}
+								}
+								if len(destroyedApps) > 0 {
+									log.Info("requeueing after destroying applications", "applications", destroyedApps)
+									return ctrl.Result{RequeueAfter: requeueTime}, nil
+								}
+
+								log.Info("destroying model")
+								destroyModelInput := juju.DestroyModelInput{
+									UUID: modelUUID,
+								}
+								if err := jujuClient.Models.DestroyModel(ctx, destroyModelInput); err != nil {
+									log.Error(err, "failed to destroy model")
+									return ctrl.Result{}, err
+								}
+								log.Info("request to destroy model succeeded, requeueing")
+								return ctrl.Result{RequeueAfter: requeueTime}, nil
+							} else {
+								log.Error(nil, "model was alive and in a non-destroying state, but the model UUID returned was nil", "model", jujuCluster.Name)
+								return ctrl.Result{RequeueAfter: requeueTime}, nil
+							}
+						} else {
+							log.Info("model is being destroyed, requeueing")
+							return ctrl.Result{RequeueAfter: requeueTime}, nil
 						}
-					} else {
-						log.Info("model is being destroyed, requeueing")
-						return ctrl.Result{RequeueAfter: 10 * time.Second}, err
 					}
-
 				}
-			}
-			credExistsInput := juju.CredentialExistsInput{
-				CredentialName: jujuCluster.Name,
-				CloudName:      jujuCluster.Name,
-			}
-			credentialExists, err := jujuClient.Credentials.CredentialExists(ctx, credExistsInput)
-			if err != nil {
-				log.Error(err, "failed to query existing credentials")
-				return ctrl.Result{}, err
-			}
-			if credentialExists {
-				revokeCredInput := juju.RevokeCredentialInput{
-					CredentialName: jujuCluster.Name,
-					CloudName:      jujuCluster.Name,
-				}
-				log.Info("removing credential")
-				if err := jujuClient.Credentials.RevokeCredential(ctx, revokeCredInput); err != nil {
-					log.Error(err, "failed to revoke credential")
-					return ctrl.Result{}, err
-				}
-				log.Info("request to revoke credential succeeded, requeueing")
-				return ctrl.Result{Requeue: true}, err
-
-			}
-
-			cloudExistsInput := juju.CloudExistsInput{
-				Name: jujuCluster.Name,
-			}
-			cloudExists, err := jujuClient.Clouds.CloudExists(ctx, cloudExistsInput)
-			if err != nil {
-				log.Error(err, "failed to query existing clouds")
-				return ctrl.Result{}, err
-			}
-			if cloudExists {
-				log.Info("removing cloud")
-				if err := jujuClient.Clouds.RemoveCloud(ctx, jujuCluster.Name); err != nil {
-					log.Error(err, "failed to remove cloud")
-					return ctrl.Result{}, err
-				}
-				log.Info("request to revoke remove cloud succeeded, requeueing")
-				return ctrl.Result{Requeue: true}, err
 			}
 
 			log.Info("destroying controller")
@@ -313,6 +315,7 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			log.Error(err, "failed to add cloud")
 			return ctrl.Result{}, err
 		}
+		return ctrl.Result{RequeueAfter: requeueTime}, nil
 	}
 
 	// Check if credential has been created yet
@@ -332,6 +335,7 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			log.Error(err, "failed to add credential")
 			return ctrl.Result{}, err
 		}
+		return ctrl.Result{RequeueAfter: requeueTime}, nil
 	}
 
 	// Check if model has been created yet
@@ -349,6 +353,82 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 
 		log.Info("created model", "response", response)
+		return ctrl.Result{RequeueAfter: requeueTime}, nil
+	}
+
+	modelUUID, err := jujuClient.Models.GetModelUUID(ctx, jujuCluster.Name)
+	if err != nil {
+		log.Error(err, "failed to retrieve modelUUID")
+		return ctrl.Result{}, err
+	}
+
+	createdApplications, err := createApplicationsIfNeeded(ctx, jujuCluster, jujuClient, modelUUID)
+	if err != nil {
+		log.Error(err, "error creating applications")
+		return ctrl.Result{}, err
+	}
+	if createdApplications {
+		log.Info("applications were created, requeuing")
+		return ctrl.Result{RequeueAfter: requeueTime}, nil
+	}
+
+	createdIntegrations, err := createIntegrationsIfNeeded(ctx, jujuCluster, jujuClient, modelUUID)
+	if err != nil {
+		log.Error(err, "error creating integrations")
+		return ctrl.Result{}, err
+	}
+	if createdIntegrations {
+		log.Info("integrations were created, requeuing")
+		return ctrl.Result{RequeueAfter: requeueTime}, nil
+	}
+
+	readEasyRSAInput := juju.ReadApplicationInput{
+		ModelUUID:       modelUUID,
+		ApplicationName: "easyrsa",
+	}
+	easyRSAActiveIdle, err := jujuClient.Applications.AreApplicationUnitsActiveIdle(ctx, readEasyRSAInput)
+	if err != nil {
+		log.Error(err, "Error querying easyrsa unit status")
+		return ctrl.Result{}, err
+	}
+	if !easyRSAActiveIdle {
+		log.Info("easyrsa units are not yet active/idle, requeueing")
+		return ctrl.Result{RequeueAfter: requeueTime}, nil
+	}
+
+	readLoadBalancerInput := juju.ReadApplicationInput{
+		ModelUUID:       modelUUID,
+		ApplicationName: "kubeapi-load-balancer",
+	}
+	loadBalancerActiveIdle, err := jujuClient.Applications.AreApplicationUnitsActiveIdle(ctx, readLoadBalancerInput)
+	if err != nil {
+		log.Error(err, "Error querying kubeapi-load-balancer unit status")
+		return ctrl.Result{}, err
+	}
+	if !loadBalancerActiveIdle {
+		log.Info("kubeapi-load-balancer units are not yet active/idle, requeueing")
+		return ctrl.Result{RequeueAfter: requeueTime}, nil
+	}
+
+	if jujuCluster.Spec.ControlPlaneEndpoint.Host == "" {
+		log.Info("cluster control plane endpoint host was empty, setting it now")
+		address, err := getLoadBalancerAddress(ctx, jujuCluster, jujuClient, modelUUID)
+		if err != nil {
+			log.Error(err, "error retreiving load balancer address")
+			return ctrl.Result{}, err
+		}
+		if address == nil {
+			log.Error(err, "load balancer address was nil")
+			return ctrl.Result{}, fmt.Errorf("load balancer address is nil")
+		}
+		jujuCluster.Spec.ControlPlaneEndpoint.Host = *address
+		jujuCluster.Spec.ControlPlaneEndpoint.Port = 443
+		if err := r.Update(ctx, jujuCluster); err != nil {
+			log.Error(err, "error updating control plane endpoint")
+			return ctrl.Result{}, err
+		}
+		log.Info("successfully updated JujuCluster", "Spec.ControlPlaneEndpoint", jujuCluster.Spec.ControlPlaneEndpoint)
+		return ctrl.Result{}, nil
 	}
 
 	if !jujuCluster.Status.Ready {
@@ -746,7 +826,7 @@ func createModel(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuClu
 	config["logging-config"] = "<root>=DEBUG"
 	config["datastore"] = "vsanDatastore"
 	config["primary-network"] = "VLAN_2764"
-	createModelInput := juju.CreateModelInputt{
+	createModelInput := juju.CreateModelInput{
 		Name:           jujuCluster.Name,
 		Cloud:          jujuCluster.Name,
 		CloudRegion:    "Boston",
@@ -761,4 +841,164 @@ func createModel(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuClu
 	}
 
 	return response, nil
+}
+
+func getLoadBalancerAddress(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster, client *juju.Client, modelUUID string) (*string, error) {
+	readLoadBalancerInput := juju.ReadApplicationInput{
+		ModelUUID:       modelUUID,
+		ApplicationName: "kubeapi-load-balancer",
+	}
+	address, err := client.Applications.GetLeaderAddress(ctx, readLoadBalancerInput)
+	if err != nil {
+		return nil, err
+	}
+
+	return address, nil
+}
+
+func createIntegrationsIfNeeded(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster, client *juju.Client, modelUUID string) (bool, error) {
+	log := log.FromContext(ctx)
+	created := false
+	integrationInputs := []juju.IntegrationInput{
+		{
+			ModelUUID: modelUUID,
+			Endpoints: []string{"kubeapi-load-balancer:certificates", "easyrsa:client"},
+		},
+		{
+			ModelUUID: modelUUID,
+			Endpoints: []string{"kubernetes-control-plane:certificates", "easyrsa:client"},
+		},
+		{
+			ModelUUID: modelUUID,
+			Endpoints: []string{"kubernetes-worker:certificates", "easyrsa:client"},
+		},
+		{
+			ModelUUID: modelUUID,
+			Endpoints: []string{"etcd:certificates", "easyrsa:client"},
+		},
+		{
+			ModelUUID: modelUUID,
+			Endpoints: []string{"kubernetes-control-plane:etcd", "etcd:db"},
+		},
+		{
+			ModelUUID: modelUUID,
+			Endpoints: []string{"kubernetes-control-plane:kube-control", "kubernetes-worker:kube-control"},
+		},
+		{
+			ModelUUID: modelUUID,
+			Endpoints: []string{"kubernetes-control-plane:loadbalancer-external", "kubeapi-load-balancer:lb-consumers"},
+		},
+		{
+			ModelUUID: modelUUID,
+			Endpoints: []string{"kubernetes-control-plane:loadbalancer-internal", "kubeapi-load-balancer:lb-consumers"},
+		},
+	}
+
+	for _, integrationInput := range integrationInputs {
+		integrationExists, err := client.Integrations.IntegrationExists(ctx, &integrationInput)
+		if err != nil {
+			log.Error(err, fmt.Sprintf("Error querying existing integrations for integration: %+v", integrationInput))
+			return created, err
+		}
+		if !integrationExists {
+			log.Info("integration not found, creating it now", "integration", integrationInput)
+			response, err := client.Integrations.CreateIntegration(ctx, &integrationInput)
+			if err != nil {
+				log.Error(err, fmt.Sprintf("error creating integration %+v", integrationInput))
+				return created, err
+			}
+			log.Info("created integration", "integration", integrationInput, "response", response)
+			created = true
+		}
+	}
+
+	return created, nil
+}
+
+func createApplicationsIfNeeded(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster, client *juju.Client, modelUUID string) (bool, error) {
+	log := log.FromContext(ctx)
+	created := false
+	easyRSACons, err := constraints.Parse("cores=1", "mem=4G", "root-disk=16G")
+	if err != nil {
+		log.Error(err, "error creating machine constraints")
+		return false, err
+	}
+
+	lbCons, err := constraints.Parse("cores=1", "mem=4G", "root-disk=16G")
+	if err != nil {
+		log.Error(err, "error creating machine constraints")
+		return created, err
+	}
+
+	createInputs := []juju.CreateApplicationInput{
+		{
+			ApplicationName: "easyrsa",
+			ModelUUID:       modelUUID,
+			CharmName:       "easyrsa",
+			CharmChannel:    "1.26/stable",
+			CharmBase:       "ubuntu@22.04",
+			Units:           1,
+			Constraints:     easyRSACons,
+		},
+		{
+			ApplicationName: "kubeapi-load-balancer",
+			ModelUUID:       modelUUID,
+			CharmName:       "kubeapi-load-balancer",
+			CharmChannel:    "1.26/stable",
+			CharmBase:       "ubuntu@22.04",
+			Units:           1,
+			Constraints:     lbCons,
+		},
+		{
+			ApplicationName: "kubernetes-control-plane",
+			ModelUUID:       modelUUID,
+			CharmName:       "kubernetes-control-plane",
+			CharmChannel:    "1.26/stable",
+			CharmBase:       "ubuntu@22.04",
+			Units:           0,
+		},
+		{
+			ApplicationName: "kubernetes-worker",
+			ModelUUID:       modelUUID,
+			CharmName:       "kubernetes-worker",
+			CharmChannel:    "1.26/stable",
+			CharmBase:       "ubuntu@22.04",
+			Units:           0,
+		},
+		{
+			ApplicationName: "etcd",
+			ModelUUID:       modelUUID,
+			CharmName:       "etcd",
+			CharmChannel:    "1.26/stable",
+			CharmBase:       "ubuntu@22.04",
+			Units:           0,
+		},
+	}
+
+	for _, createInput := range createInputs {
+		existsInput := juju.ApplicationExistsInput{
+			ModelUUID:       modelUUID,
+			ApplicationName: createInput.ApplicationName,
+		}
+		exists, err := client.Applications.ApplicationExists(ctx, existsInput)
+		if err != nil {
+			log.Error(err, fmt.Sprintf("failed to query existing applications while checking if %s exists", existsInput.ApplicationName))
+			return created, err
+		}
+		if !exists {
+			log.Info(fmt.Sprintf("application %s not found, creating it now", createInput.ApplicationName))
+			response, err := client.Applications.CreateApplication(ctx, &createInput)
+			if err != nil {
+				log.Error(err, fmt.Sprintf("error creating application %s", createInput.ApplicationName))
+				return created, err
+			}
+
+			log.Info("created application", "response", response)
+			created = true
+		}
+
+	}
+
+	return created, nil
+
 }
