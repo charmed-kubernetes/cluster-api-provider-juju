@@ -191,6 +191,7 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			}
 
 			// remove our finalizer from the list and update it.
+			log.Info("removing finalizer")
 			controllerutil.RemoveFinalizer(jujuMachine, infrastructurev1beta1.JujuMachineFinalizer)
 			if err := r.Update(ctx, jujuMachine); err != nil {
 				return ctrl.Result{}, err
