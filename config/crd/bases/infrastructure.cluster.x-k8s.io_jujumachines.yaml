@@ -35,6 +35,10 @@ spec:
           spec:
             description: JujuMachineSpec defines the desired state of JujuMachine
             properties:
+              constraints:
+                description: 'Constraints for the machine specified as a comma-separated
+                  string of key-value pairs Example: "cores=2,mem=8G,root-disk=16G"'
+                type: string
               machineID:
                 description: Machine holds a pointer the ID of the machine that is
                   returned when a machine gets created by the Juju API This is generally

@@ -32,6 +32,10 @@ type JujuMachineSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
+	// Constraints for the machine specified as a comma-separated string of key-value pairs
+	// Example: "cores=2,mem=8G,root-disk=16G"
+	Constraints string `json:"constraints,omitempty"`
+
 	// Machine holds a pointer the ID of the machine that is returned when a machine gets created by the Juju API
 	// This is generally a number like 0, 1, 2 etc
 	// This is expected to eventually be set by the machine controller

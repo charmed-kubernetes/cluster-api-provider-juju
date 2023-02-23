@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/juju/juju/api"
+	"github.com/juju/juju/api/base"
 	"github.com/juju/juju/api/client/modelconfig"
 	"github.com/juju/juju/api/client/modelmanager"
 	"github.com/juju/juju/core/constraints"
@@ -19,13 +20,17 @@ type modelsClient struct {
 	ConnectionFactory
 }
 
-type CreateModelInputt struct {
+type CreateModelInput struct {
 	Name           string
 	Cloud          string
 	CloudRegion    string
 	CredentialName string
 	Config         map[string]interface{}
 	Constraints    constraints.Value
+}
+
+type CreateModelResponse struct {
+	ModelInfo base.ModelInfo
 }
 
 type DestroyModelInput struct {
@@ -146,7 +151,7 @@ func (c *modelsClient) ModelExists(ctx context.Context, name string) (bool, erro
 	return false, nil
 }
 
-func (c *modelsClient) CreateModel(ctx context.Context, input CreateModelInputt) (*CreateModelResponse, error) {
+func (c *modelsClient) CreateModel(ctx context.Context, input CreateModelInput) (*CreateModelResponse, error) {
 	conn, err := c.GetConnection(ctx, nil)
 	if err != nil {
 		return nil, err
