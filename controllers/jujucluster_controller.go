@@ -151,8 +151,8 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 	if jujuConfig == nil {
-		log.Info("juju controller configuration was nil, requeuing")
-		return ctrl.Result{RequeueAfter: requeueTime}, nil
+		log.Error(err, "juju controller configuration was nil")
+		return ctrl.Result{}, err
 	}
 
 	connectorConfig := juju.Configuration{
