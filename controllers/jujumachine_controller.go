@@ -19,14 +19,12 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/charmed-kubernetes/cluster-api-provider-juju/juju"
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/rpc/params"
-	kcore "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/cluster-api/util"
@@ -113,28 +111,23 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
-	// Check if juju config map has been created yet
-	jujuConfigMap := &kcore.ConfigMap{}
-	objectKey = client.ObjectKey{
-		Namespace: jujuCluster.Namespace,
-		Name:      jujuCluster.Name + "-juju-controller-config",
+	// Get config data from secret
+	jujuConfig, err := getJujuConfigFromSecret(ctx, jujuCluster, r.Client)
+	if err != nil {
+		log.Error(err, "failed to retrieve juju configuration data from secret")
+		return ctrl.Result{}, err
 	}
-	if err := r.Get(ctx, objectKey, jujuConfigMap); err != nil {
-		if apierrors.IsNotFound(err) {
-			log.Info("waiting for juju controller config map to be found")
-			return ctrl.Result{Requeue: true}, nil
-		} else {
-			return ctrl.Result{}, err
-		}
+	if jujuConfig == nil {
+		log.Info("juju controller configuration was nil, requeuing")
+		return ctrl.Result{RequeueAfter: requeueTime}, nil
 	}
 
 	connectorConfig := juju.Configuration{
-		ControllerAddresses: strings.Split(jujuConfigMap.Data["api_endpoints"], ","),
-		Username:            jujuConfigMap.Data["user"],
-		Password:            jujuConfigMap.Data["password"],
-		CACert:              jujuConfigMap.Data["ca_cert"],
+		ControllerAddresses: jujuConfig.Details.APIEndpoints,
+		Username:            jujuConfig.Account.User,
+		Password:            jujuConfig.Account.Password,
+		CACert:              jujuConfig.Details.CACert,
 	}
-
 	client, err := juju.NewClient(connectorConfig)
 	if err != nil {
 		log.Error(err, "failed to create juju client")
