@@ -17,16 +17,21 @@ limitations under the License.
 package controllers
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/charmed-kubernetes/cluster-api-provider-juju/juju"
 	"github.com/juju/juju/core/constraints"
+	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/rpc/params"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	"sigs.k8s.io/cluster-api/util"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -242,6 +247,18 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	}
 
+	if machine.Spec.Bootstrap.DataSecretName == nil {
+		log.Info("waiting for bootstrap data secret")
+		return ctrl.Result{}, nil
+	}
+
+	machineID := *jujuMachine.Spec.MachineID
+	err = r.addMissingUnitsToMachine(ctx, machine, client, modelUUID, machineID)
+	if err != nil {
+		log.Error(err, fmt.Sprintf("failed to add units to the machine"))
+		return ctrl.Result{}, err
+	}
+
 	log.Info("stopping reconciliation")
 	return ctrl.Result{}, nil
 }
@@ -251,6 +268,95 @@ func (r *JujuMachineReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&infrastructurev1beta1.JujuMachine{}).
 		Complete(r)
+}
+
+func (r *JujuMachineReconciler) addMissingUnitsToMachine(ctx context.Context, machine *clusterv1.Machine, client *juju.Client, modelUUID string, machineID string) error {
+	log := log.FromContext(ctx)
+
+	namespace := machine.Namespace
+	dataSecretName := *machine.Spec.Bootstrap.DataSecretName
+	bootstrapData, err := r.getBootstrapData(ctx, namespace, dataSecretName)
+	if err != nil {
+		log.Error(err, "failed to get bootstrap data")
+		return err
+	}
+
+	for _, app := range bootstrapData {
+		unitExists, err := applicationHasUnitOnMachine(ctx, client, modelUUID, app, machineID)
+		if err != nil {
+			log.Error(err, "failed to check if unit exists on the machine")
+			return err
+		}
+
+		if unitExists {
+			log.Info(fmt.Sprintf("machine %s already has units belong to app %s, skipping", machineID, app))
+		} else {
+			units, err := client.Applications.AddUnits(ctx, juju.AddUnitsInput{
+				ApplicationName: app,
+				ModelUUID:       modelUUID,
+				NumUnits:        1,
+				Placement: []*instance.Placement{
+					&instance.Placement{
+						Scope:     instance.MachineScope,
+						Directive: machineID,
+					},
+				},
+			})
+			if err != nil {
+				log.Error(err, fmt.Sprintf("failed to add units for app %s to machine %s in model %s", app, machineID, modelUUID))
+				return err
+			}
+			log.Info(fmt.Sprintf("successfully added units %s to machine %s in model %s", units, machineID, modelUUID))
+		}
+	}
+
+	return nil
+}
+
+func (r *JujuMachineReconciler) getBootstrapData(ctx context.Context, namespace string, dataSecretName string) ([]string, error) {
+	log := log.FromContext(ctx)
+
+	secret := &corev1.Secret{}
+	err := r.Client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: dataSecretName}, secret)
+	if err != nil {
+		log.Error(err, "failed to get bootstrap data secret")
+		return nil, err
+	}
+
+	if !bytes.Equal(secret.Data["format"], []byte("juju")) {
+		return nil, fmt.Errorf("bootstrap data secret has the wrong format")
+	}
+
+	var bootstrapData []string
+	err = json.Unmarshal(secret.Data["value"], &bootstrapData)
+	if err != nil {
+		log.Error(err, "failed to unmarshal bootstrap data value")
+		return nil, err
+	}
+
+	return bootstrapData, nil
+}
+
+func applicationHasUnitOnMachine(ctx context.Context, client *juju.Client, modelUUID string, applicationName string, machineID string) (bool, error) {
+	log := log.FromContext(ctx)
+
+	readAppInput := juju.ReadApplicationInput{
+		ModelUUID:       modelUUID,
+		ApplicationName: applicationName,
+	}
+	readAppResponse, err := client.Applications.ReadApplication(ctx, &readAppInput)
+	if err != nil {
+		log.Error(err, fmt.Sprintf("failed to read application %s in model %s", applicationName, modelUUID))
+		return false, err
+	}
+
+	for _, unitStatus := range readAppResponse.Status.Units {
+		if unitStatus.Machine == machineID {
+			return true, nil
+		}
+	}
+
+	return false, nil
 }
 
 func createMachine(ctx context.Context, modelUUID string, client *juju.Client) (params.AddMachinesResult, error) {
