@@ -380,7 +380,7 @@ func createMachine(ctx context.Context, modelUUID string, client *juju.Client) (
 
 func destroyMachine(ctx context.Context, machineID string, modelUUID string, client *juju.Client) (params.DestroyMachineResult, error) {
 	input := juju.DestroyMachineInput{
-		Force:     false,
+		Force:     true, // FIXME: clean up more cleanly by iterating over units
 		Keep:      false,
 		DryRun:    false,
 		MaxWait:   10 * time.Minute,
