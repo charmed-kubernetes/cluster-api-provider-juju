@@ -804,6 +804,14 @@ func createIntegrationsIfNeeded(ctx context.Context, jujuCluster *infrastructure
 			ModelUUID: modelUUID,
 			Endpoints: []string{"kubernetes-control-plane:loadbalancer-internal", "kubeapi-load-balancer:lb-consumers"},
 		},
+		{
+			ModelUUID: modelUUID,
+			Endpoints: []string{"containerd:containerd", "kubernetes-worker:container-runtime"},
+		},
+		{
+			ModelUUID: modelUUID,
+			Endpoints: []string{"containerd:containerd", "kubernetes-control-plane:container-runtime"},
+		},
 	}
 
 	for _, integrationInput := range integrationInputs {
@@ -881,6 +889,14 @@ func createApplicationsIfNeeded(ctx context.Context, jujuCluster *infrastructure
 			ApplicationName: "etcd",
 			ModelUUID:       modelUUID,
 			CharmName:       "etcd",
+			CharmChannel:    "1.26/stable",
+			CharmBase:       "ubuntu@22.04",
+			Units:           0,
+		},
+		{
+			ApplicationName: "containerd",
+			ModelUUID:       modelUUID,
+			CharmName:       "containerd",
 			CharmChannel:    "1.26/stable",
 			CharmBase:       "ubuntu@22.04",
 			Units:           0,
