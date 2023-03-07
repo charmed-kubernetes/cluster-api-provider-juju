@@ -253,9 +253,21 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	machineID := *jujuMachine.Spec.MachineID
-	err = r.addMissingUnitsToMachine(ctx, machine, client, modelUUID, machineID)
+	appsReady, err := r.reconcileApplications(ctx, machine, client, modelUUID, machineID)
 	if err != nil {
 		log.Error(err, fmt.Sprintf("failed to add units to the machine"))
+		return ctrl.Result{}, err
+	}
+
+	if !appsReady {
+		log.Info("apps not ready yet, requeueing")
+		return ctrl.Result{Requeue: true}, nil
+	}
+
+	jujuMachine.Status.Ready = true
+	err = r.Status().Update(ctx, jujuMachine)
+	if err != nil {
+		log.Error(err, "failed to update JujuMachine status")
 		return ctrl.Result{}, err
 	}
 
@@ -270,7 +282,7 @@ func (r *JujuMachineReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func (r *JujuMachineReconciler) addMissingUnitsToMachine(ctx context.Context, machine *clusterv1.Machine, client *juju.Client, modelUUID string, machineID string) error {
+func (r *JujuMachineReconciler) reconcileApplications(ctx context.Context, machine *clusterv1.Machine, client *juju.Client, modelUUID string, machineID string) (bool, error) {
 	log := log.FromContext(ctx)
 
 	namespace := machine.Namespace
@@ -278,19 +290,19 @@ func (r *JujuMachineReconciler) addMissingUnitsToMachine(ctx context.Context, ma
 	bootstrapData, err := r.getBootstrapData(ctx, namespace, dataSecretName)
 	if err != nil {
 		log.Error(err, "failed to get bootstrap data")
-		return err
+		return false, err
 	}
 
+	appsReady := true
+
 	for _, app := range bootstrapData {
-		unitExists, err := applicationHasUnitOnMachine(ctx, client, modelUUID, app, machineID)
+		unitStatus, err := getUnitStatusForAppOnMachine(ctx, client, modelUUID, app, machineID)
 		if err != nil {
-			log.Error(err, "failed to check if unit exists on the machine")
-			return err
+			log.Error(err, fmt.Sprintf("failed to get unit status for app %s on machine %s", app, machineID))
+			return false, err
 		}
 
-		if unitExists {
-			log.Info(fmt.Sprintf("machine %s already has units belong to app %s, skipping", machineID, app))
-		} else {
+		if unitStatus == nil {
 			units, err := client.Applications.AddUnits(ctx, juju.AddUnitsInput{
 				ApplicationName: app,
 				ModelUUID:       modelUUID,
@@ -303,14 +315,19 @@ func (r *JujuMachineReconciler) addMissingUnitsToMachine(ctx context.Context, ma
 				},
 			})
 			if err != nil {
-				log.Error(err, fmt.Sprintf("failed to add units for app %s to machine %s in model %s", app, machineID, modelUUID))
-				return err
+				log.Error(err, fmt.Sprintf("failed to add unit for app %s to machine %s in model %s", app, machineID, modelUUID))
+				return false, err
 			}
-			log.Info(fmt.Sprintf("successfully added units %s to machine %s in model %s", units, machineID, modelUUID))
+			log.Info(fmt.Sprintf("successfully added unit %s to machine %s in model %s", units, machineID, modelUUID))
+		} else if unitStatus.WorkloadStatus.Status == "active" && unitStatus.AgentStatus.Status == "idle" {
+			log.Info(fmt.Sprintf("application %s is ready on machine %s", app, machineID))
+		} else {
+			appsReady = false
+			log.Info(fmt.Sprintf("application %s is not ready on machine %s, status: %+v", app, machineID, unitStatus))
 		}
 	}
 
-	return nil
+	return appsReady, nil
 }
 
 func (r *JujuMachineReconciler) getBootstrapData(ctx context.Context, namespace string, dataSecretName string) ([]string, error) {
@@ -337,7 +354,7 @@ func (r *JujuMachineReconciler) getBootstrapData(ctx context.Context, namespace 
 	return bootstrapData, nil
 }
 
-func applicationHasUnitOnMachine(ctx context.Context, client *juju.Client, modelUUID string, applicationName string, machineID string) (bool, error) {
+func getUnitStatusForAppOnMachine(ctx context.Context, client *juju.Client, modelUUID string, applicationName string, machineID string) (*params.UnitStatus, error) {
 	log := log.FromContext(ctx)
 
 	readAppInput := juju.ReadApplicationInput{
@@ -347,16 +364,16 @@ func applicationHasUnitOnMachine(ctx context.Context, client *juju.Client, model
 	readAppResponse, err := client.Applications.ReadApplication(ctx, &readAppInput)
 	if err != nil {
 		log.Error(err, fmt.Sprintf("failed to read application %s in model %s", applicationName, modelUUID))
-		return false, err
+		return nil, err
 	}
 
 	for _, unitStatus := range readAppResponse.Status.Units {
 		if unitStatus.Machine == machineID {
-			return true, nil
+			return &unitStatus, nil
 		}
 	}
 
-	return false, nil
+	return nil, nil
 }
 
 func createMachine(ctx context.Context, modelUUID string, client *juju.Client) (params.AddMachinesResult, error) {
