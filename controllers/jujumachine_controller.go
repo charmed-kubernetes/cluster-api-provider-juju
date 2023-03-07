@@ -303,6 +303,7 @@ func (r *JujuMachineReconciler) reconcileApplications(ctx context.Context, machi
 		}
 
 		if unitStatus == nil {
+			appsReady = false
 			units, err := client.Applications.AddUnits(ctx, juju.AddUnitsInput{
 				ApplicationName: app,
 				ModelUUID:       modelUUID,
