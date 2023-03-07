@@ -876,6 +876,11 @@ func createApplicationsIfNeeded(ctx context.Context, jujuCluster *infrastructure
 			CharmChannel:    "1.27/edge",
 			CharmBase:       "ubuntu@22.04",
 			Units:           0,
+			Config: map[string]interface{}{
+				"ignore-missing-cni": true,
+				"enable-metrics":     false,
+				"dns-provider":       "none",
+			},
 		},
 		{
 			ApplicationName: "kubernetes-worker",
