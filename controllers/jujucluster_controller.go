@@ -877,9 +877,10 @@ func createApplicationsIfNeeded(ctx context.Context, jujuCluster *infrastructure
 			CharmBase:       "ubuntu@22.04",
 			Units:           0,
 			Config: map[string]interface{}{
-				"ignore-missing-cni": true,
-				"enable-metrics":     false,
-				"dns-provider":       "none",
+				"ignore-missing-cni":      true,
+				"enable-metrics":          false,
+				"dns-provider":            "none",
+				"enable-dashboard-addons": false,
 			},
 		},
 		{
