@@ -14,6 +14,7 @@ import (
 	apiresources "github.com/juju/juju/api/client/resources"
 	"github.com/juju/juju/cmd/juju/application/utils"
 	"github.com/juju/juju/core/constraints"
+	"github.com/juju/juju/core/instance"
 	coreseries "github.com/juju/juju/core/series"
 	"github.com/juju/juju/rpc/params"
 	"github.com/juju/names/v4"
@@ -72,6 +73,13 @@ type DestroyApplicationInput struct {
 type ApplicationExistsInput struct {
 	ApplicationName string
 	ModelUUID       string
+}
+
+type AddUnitsInput struct {
+	ApplicationName string
+	ModelUUID       string
+	NumUnits        int
+	Placement       []*instance.Placement
 }
 
 // ConfigEntry is an auxiliar struct to
@@ -548,4 +556,21 @@ func (c applicationsClient) GetApplicationsStatus(ctx context.Context, modelUUID
 		return nil, err
 	}
 	return status.Applications, nil
+}
+
+func (c applicationsClient) AddUnits(ctx context.Context, input AddUnitsInput) ([]string, error) {
+	conn, err := c.GetConnection(ctx, &input.ModelUUID)
+	applicationAPIClient := apiapplication.NewClient(conn)
+	defer applicationAPIClient.Close()
+
+	units, err := applicationAPIClient.AddUnits(apiapplication.AddUnitsParams{
+		ApplicationName: input.ApplicationName,
+		NumUnits:        input.NumUnits,
+		Placement:       input.Placement,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return units, nil
 }

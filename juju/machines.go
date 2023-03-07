@@ -114,7 +114,12 @@ func (c *machinesClient) GetMachine(ctx context.Context, input GetMachineInput) 
 		return nil, fmt.Errorf("no model returned for UUID: %s", input.ModelUUID)
 	}
 
-	modelInfo := *models[0].Result
+	model := models[0]
+	if model.Result == nil {
+		return nil, fmt.Errorf("model info result is nil for UUID: %s", input.ModelUUID)
+	}
+
+	modelInfo := *model.Result
 	for _, machine := range modelInfo.Machines {
 		if machine.Id == input.MachineID {
 			return &machine, nil
