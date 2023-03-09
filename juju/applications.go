@@ -518,6 +518,11 @@ func (c applicationsClient) AreApplicationUnitsActiveIdle(ctx context.Context, i
 		return false, err
 	}
 
+	if len(readAppResponse.Status.Units) < 1 {
+		log.Info("application has no units", "app status", readAppResponse.Status)
+		return false, nil
+	}
+
 	for _, unit := range readAppResponse.Status.Units {
 		if unit.WorkloadStatus.Status != "active" || unit.AgentStatus.Status != "idle" {
 			log.Info("unit is not active/idle", "app status", readAppResponse.Status)
