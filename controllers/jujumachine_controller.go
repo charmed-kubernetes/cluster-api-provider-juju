@@ -255,7 +255,7 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	machineID := *jujuMachine.Spec.MachineID
 	appsReady, err := r.reconcileApplications(ctx, machine, client, modelUUID, machineID)
 	if err != nil {
-		log.Error(err, fmt.Sprintf("failed to add units to the machine"))
+		log.Error(err, "failed to add units to the machine")
 		return ctrl.Result{}, err
 	}
 
@@ -309,7 +309,7 @@ func (r *JujuMachineReconciler) reconcileApplications(ctx context.Context, machi
 				ModelUUID:       modelUUID,
 				NumUnits:        1,
 				Placement: []*instance.Placement{
-					&instance.Placement{
+					{
 						Scope:     instance.MachineScope,
 						Directive: machineID,
 					},
