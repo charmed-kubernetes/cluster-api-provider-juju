@@ -97,7 +97,7 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	if !cluster.Status.InfrastructureReady {
 		log.Info("cluster is not ready yet")
-		return ctrl.Result{}, nil
+		return ctrl.Result{Requeue: true}, nil
 	}
 
 	// Get Infra cluster
