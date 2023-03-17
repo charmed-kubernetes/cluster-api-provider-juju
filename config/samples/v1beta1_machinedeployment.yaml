@@ -1,0 +1,38 @@
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: MachineDeployment
+metadata:
+  name: machinedeployment-sample
+spec:
+  clusterName: cluster-sample
+  replicas: 1
+  template:
+    spec:
+      clusterName: cluster-sample
+      bootstrap:
+        configRef:
+          name: charmedk8sconfig-machinedeployment
+          apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+          kind: CharmedK8sConfigTemplate
+      infrastructureRef:
+        name: jujumachinetemplate-machinedeployment
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: JujuMachineTemplate
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: JujuMachineTemplate
+metadata:
+  name: jujumachinetemplate-machinedeployment
+spec:
+  template:
+    spec:
+      constraints: "cores=2,mem=8G,root-disk=16G"
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+kind: CharmedK8sConfigTemplate
+metadata:
+  name: charmedk8sconfig-machinedeployment
+spec:
+  template:
+    spec:
+      workerApplications:
+        - kubernetes-worker
