@@ -18,6 +18,7 @@ package controllers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -299,9 +300,13 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		log.Error(err, "error creating registration secret")
 		return ctrl.Result{}, err
 	}
-
+	cloudName, err := getCloudName(ctx, jujuCluster)
+	if err != nil {
+		log.Error(err, "error getting cloud name")
+		return ctrl.Result{}, err
+	}
 	cloudExistsInput := juju.CloudExistsInput{
-		Name: jujuCluster.Name,
+		Name: cloudName,
 	}
 	cloudExists, err := jujuClient.Clouds.CloudExists(ctx, cloudExistsInput)
 	if err != nil {
@@ -309,8 +314,12 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
-	if !cloudExists {
-		log.Info("cloud not found, creating it now")
+	if !cloudExists && jujuCluster.Spec.CloudName != "" {
+		log.Error(err, "cloud was not found, ensure cloudName is correct", "cloud", cloudName)
+		return ctrl.Result{}, err
+	}
+	if !cloudExists && jujuCluster.Spec.Cloud != nil {
+		log.Info("cloud not found, creating it now", "cloud", cloudName)
 		err = createCloud(ctx, jujuCluster, jujuClient)
 		if err != nil {
 			log.Error(err, "failed to add cloud")
@@ -687,22 +696,25 @@ func (r *JujuClusterReconciler) getBootstrapJob(ctx context.Context, jujuCluster
 }
 
 func createCloud(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster, client *juju.Client) error {
-	vsphereRegion := cloud.Region{
-		Name:     "Boston",
-		Endpoint: jujuCluster.Spec.CloudEndpoint,
+
+	if jujuCluster.Spec.Cloud == nil {
+		return errors.New("Spec.Cloud was nil")
 	}
 
-	vsphereCloud := cloud.Cloud{
-		Name:      jujuCluster.Name,
-		Type:      "vsphere",
-		Endpoint:  jujuCluster.Spec.CloudEndpoint,
-		Regions:   []cloud.Region{vsphereRegion},
-		AuthTypes: []cloud.AuthType{"userpass"},
+	cloudJson, err := json.Marshal(jujuCluster.Spec.Cloud)
+	if err != nil {
+		return err
+	}
+
+	jujuCloud := &cloud.Cloud{}
+	err = json.Unmarshal(cloudJson, jujuCloud)
+	if err != nil {
+		return err
 	}
 
 	// Force must be true when adding a non-k8s cloud to a in-k8s juju controller
 	addCloudInput := juju.AddCloudInput{
-		Cloud: vsphereCloud,
+		Cloud: *jujuCloud,
 		Force: true,
 	}
 	return client.Clouds.AddCloud(ctx, addCloudInput)
@@ -971,4 +983,19 @@ func (r *JujuClusterReconciler) createRegistrationSecretIfNeeded(ctx context.Con
 	}
 
 	return nil
+}
+
+func getCloudName(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster) (string, error) {
+	if jujuCluster.Spec.CloudName != "" && jujuCluster.Spec.Cloud != nil {
+		return "", errors.New("cloudName and cloud cannot both be specified, you must use one or the other")
+	}
+
+	if jujuCluster.Spec.CloudName != "" {
+		return jujuCluster.Spec.CloudName, nil
+	} else if jujuCluster.Spec.Cloud != nil && jujuCluster.Spec.Cloud.Name != "" {
+		return jujuCluster.Spec.Cloud.Name, nil
+	} else {
+		return "", errors.New("cloudName could not be found in the spec")
+	}
+
 }

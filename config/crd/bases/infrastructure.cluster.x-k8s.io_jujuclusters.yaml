@@ -35,7 +35,114 @@ spec:
           spec:
             description: JujuClusterSpec defines the desired state of JujuCluster
             properties:
-              cloudEndpoint:
+              cloud:
+                description: Cloud is used to define a cloud for clouds that Juju
+                  does not work with out of the box such as VSphere. If unspecified,
+                  a CloudName must be provided
+                properties:
+                  CACertificates:
+                    description: CACertificates contains an optional list of Certificate
+                      Authority certificates to be used to validate certificates of
+                      cloud infrastructure components The contents are Base64 encoded
+                      x.509 certs.
+                    items:
+                      type: string
+                    type: array
+                  authTypes:
+                    description: AuthTypes are the authentication modes supported
+                      by the cloud.
+                    items:
+                      type: string
+                    type: array
+                  config:
+                    additionalProperties:
+                      type: string
+                    description: Config contains optional cloud-specific configuration
+                      to use when bootstrapping Juju in this cloud. The cloud configuration
+                      will be combined with Juju-generated, and user-supplied values;
+                      user-supplied values taking precedence.
+                    type: object
+                  description:
+                    description: Description describes the type of cloud.
+                    type: string
+                  endpoint:
+                    description: Endpoint is the default endpoint for the cloud regions,
+                      may be overridden by a region.
+                    type: string
+                  hostCloudRegion:
+                    description: HostCloudRegion represents the k8s host cloud. The
+                      format is <cloudType>/<region>.
+                    type: string
+                  identityEndpoint:
+                    description: IdentityEndpoint is the default identity endpoint
+                      for the cloud regions, may be overridden by a region.
+                    type: string
+                  isControllerCloud:
+                    description: IsControllerCloud is true when this is the cloud
+                      used by the controller.
+                    type: boolean
+                  name:
+                    description: Name of the cloud.
+                    type: string
+                  regionConfig:
+                    additionalProperties:
+                      additionalProperties:
+                        type: string
+                      type: object
+                    description: RegionConfig contains optional region specific configuration.
+                      Like Config above, this will be combined with Juju-generated
+                      and user supplied values; with user supplied values taking precedence.
+                    type: object
+                  regions:
+                    description: "Regions are the regions available in the cloud.
+                      \n Regions is a slice, and not a map, because order is important.
+                      The first region in the slice is the default region for the
+                      cloud."
+                    items:
+                      properties:
+                        endpoint:
+                          description: Endpoint is the region's primary endpoint URL.
+                          type: string
+                        identityEndpoint:
+                          description: IdentityEndpoint is the region's identity endpoint
+                            URL. If the cloud/region does not have an identity-specific
+                            endpoint URL, this will be empty.
+                          type: string
+                        name:
+                          description: Name is the name of the region.
+                          type: string
+                        storageEndpoint:
+                          description: StorageEndpoint is the region's storage endpoint
+                            URL. If the cloud/region does not have a storage-specific
+                            endpoint URL, this will be empty.
+                          type: string
+                      required:
+                      - endpoint
+                      - name
+                      type: object
+                    type: array
+                  skipTLSVerify:
+                    description: SkipTLSVerify is true if the client should be asked
+                      not to validate certificates. It is not recommended for production
+                      clouds. It is secure (false) by default.
+                    type: boolean
+                  storageEndpoint:
+                    description: StorageEndpoint is the default storage endpoint for
+                      the cloud regions, may be overridden by a region.
+                    type: string
+                  type:
+                    description: Type is the type of cloud, eg ec2, openstack etc.
+                      This is one of the provider names registered with environs.RegisterProvider.
+                    type: string
+                required:
+                - authTypes
+                - name
+                - type
+                type: object
+              cloudName:
+                description: CloudName is used to specify a predefined cloud such
+                  as aws or azure that Juju works with out of the box If unspecified,
+                  a Cloud must be provided
                 type: string
               controlPlaneEndpoint:
                 description: Required fields for infra providers ControlPlaneEndpoint
@@ -64,7 +171,6 @@ spec:
                 description: Optional fields for infra providers
                 type: string
             required:
-            - cloudEndpoint
             - controllerServiceType
             type: object
           status:
