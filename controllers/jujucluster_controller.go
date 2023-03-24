@@ -794,13 +794,14 @@ func createModel(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuClu
 	config["logging-config"] = "<root>=DEBUG"
 	config["datastore"] = "vsanDatastore"
 	config["primary-network"] = "VLAN_2764"
+
 	createModelInput := juju.CreateModelInput{
-		Name:           jujuCluster.Name,
-		Cloud:          jujuCluster.Name,
-		CloudRegion:    "Boston",
-		CredentialName: jujuCluster.Name,
+		Name:           jujuCluster.Spec.Model.Name,
+		Cloud:          jujuCluster.Spec.Model.Cloud,
+		CloudRegion:    jujuCluster.Spec.Model.CloudRegion,
+		CredentialName: jujuCluster.Spec.Model.CredentialName,
 		Config:         config,
-		Constraints:    constraints.Value{},
+		Constraints:    constraints.Value(*jujuCluster.Spec.Model.Constraints),
 	}
 
 	response, err := client.Models.CreateModel(ctx, createModelInput)

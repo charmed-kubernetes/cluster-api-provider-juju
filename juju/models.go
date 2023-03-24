@@ -14,6 +14,7 @@ import (
 	"github.com/juju/juju/rpc/params"
 	"github.com/juju/names/v4"
 	"github.com/pkg/errors"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 type modelsClient struct {
@@ -173,18 +174,24 @@ func (c *modelsClient) CreateModel(ctx context.Context, input CreateModelInput) 
 	}
 
 	// set constraints when required
-	if input.Constraints.String() != "" {
+	if input.Constraints.String() == "" {
 		return &CreateModelResponse{ModelInfo: modelInfo}, nil
 	}
 
 	// we have to set constraints
-	modelClient := modelconfig.NewClient(conn)
+	connModel, err := c.GetConnection(ctx, &modelInfo.UUID)
+	if err != nil {
+		return nil, err
+	}
+	modelClient := modelconfig.NewClient(connModel)
 	defer modelClient.Close()
+	log := log.FromContext(ctx)
+	log.Info("setting model constraints", "constraints", input.Constraints)
 	err = modelClient.SetModelConstraints(input.Constraints)
 	if err != nil {
 		return nil, err
 	}
-
+	log.Info("model constraints applied successfully")
 	return &CreateModelResponse{ModelInfo: modelInfo}, nil
 }
 

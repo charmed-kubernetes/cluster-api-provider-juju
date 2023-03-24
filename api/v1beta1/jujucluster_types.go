@@ -17,6 +17,9 @@ limitations under the License.
 package v1beta1
 
 import (
+	"encoding/json"
+
+	"github.com/juju/juju/core/constraints"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -134,6 +137,40 @@ type Credential struct {
 	CredentialSecretNamespace string `json:"credentialSecretNamespace"`
 }
 
+func deepCopy(dst interface{}, src interface{}) {
+	if dst == nil {
+		panic("dst cannot be nil")
+	}
+	if src == nil {
+		panic("src cannot be nil")
+	}
+	bytes, err := json.Marshal(src)
+	if err != nil {
+		panic("Unable to marshal src")
+	}
+	err = json.Unmarshal(bytes, dst)
+	if err != nil {
+		panic("Unable to unmarshal into dst")
+	}
+}
+
+type ConstraintValue constraints.Value
+
+func (cv *ConstraintValue) DeepCopy() *ConstraintValue {
+	out := new(ConstraintValue)
+	deepCopy(out, cv)
+	return out
+}
+
+type Model struct {
+	Name           string               `json:"name"`
+	Cloud          string               `json:"cloud"`
+	CloudRegion    string               `json:"cloudRegion,omitempty"`
+	CredentialName string               `json:"credentialName,omitempty"`
+	Config         apiextensionsv1.JSON `json:"config,omitempty"`
+	Constraints    *ConstraintValue     `json:"constraints,omitempty"`
+}
+
 // JujuClusterSpec defines the desired state of JujuCluster
 // +kubebuilder:object:generate=true
 type JujuClusterSpec struct {
@@ -144,6 +181,8 @@ type JujuClusterSpec struct {
 	// juju controller. Should be cluster, loadbalancer, or external
 	//+kubebuilder:default="cluster"
 	ControllerServiceType string `json:"controllerServiceType"`
+
+	Model *Model `json:"model"`
 
 	// Cloud is used to define the cloud the Charmed Kubernetes machine model will reside in
 	Cloud *Cloud `json:"cloud"`

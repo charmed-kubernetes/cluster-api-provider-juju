@@ -10,6 +10,17 @@ metadata:
   name: jujucluster-sample
 spec:
   # using loadbalancer requires metallb on vsphere
+  model:
+    name: jujucluster-sample
+    cloud: jujucluster-sample 
+    cloudRegion: Boston
+    credentialName: jujucluster-sample
+    config: 
+      asdf: asdfasdf
+      afds: false
+      number: 12
+    constraints:
+      arch: amd64
   controllerServiceType: loadbalancer
   credential:
     credentialSecretName: jujucluster-sample-credential-secret
