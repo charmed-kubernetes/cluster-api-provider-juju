@@ -17,6 +17,7 @@ limitations under the License.
 package v1beta1
 
 import (
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -35,10 +36,6 @@ type APIEndpoint struct {
 	// Port is the port on which the API server is serving.
 	Port int `json:"port"`
 }
-
-type Attrs map[string]string
-
-type RegionConfig map[string]Attrs
 
 type Region struct {
 	// Name is the name of the region.
@@ -103,12 +100,16 @@ type Cloud struct {
 	// when bootstrapping Juju in this cloud. The cloud configuration
 	// will be combined with Juju-generated, and user-supplied values;
 	// user-supplied values taking precedence.
-	Config map[string]string `json:"config,omitempty"`
+	// This should be a map[string]interface{}, but kube-builder does not allow interface{} types
+	// so we are forced to use untyped JSON here
+	Config *apiextensionsv1.JSON `json:"config,omitempty"`
 
 	// RegionConfig contains optional region specific configuration.
 	// Like Config above, this will be combined with Juju-generated and user
 	// supplied values; with user supplied values taking precedence.
-	RegionConfig RegionConfig `json:"regionConfig,omitempty"`
+	// This should be a map[string]map[string]interface{}, but kube-builder does not allow interface{} types
+	// so we are forced to use untyped JSON here
+	RegionConfig *apiextensionsv1.JSON `json:"regionConfig,omitempty"`
 
 	// CACertificates contains an optional list of Certificate
 	// Authority certificates to be used to validate certificates
@@ -125,6 +126,14 @@ type Cloud struct {
 	IsControllerCloud bool `json:"isControllerCloud,omitempty"`
 }
 
+type Credential struct {
+	// CredentialSecretName is used to tell the controller the name of the secret containing the cloud credentials
+	CredentialSecretName string `json:"credentialSecretName"`
+
+	// CredentialSecretNamespace is used to tell the controller the namespace of the secret containing the cloud credentials
+	CredentialSecretNamespace string `json:"credentialSecretNamespace"`
+}
+
 // JujuClusterSpec defines the desired state of JujuCluster
 // +kubebuilder:object:generate=true
 type JujuClusterSpec struct {
@@ -136,16 +145,14 @@ type JujuClusterSpec struct {
 	//+kubebuilder:default="cluster"
 	ControllerServiceType string `json:"controllerServiceType"`
 
-	// CloudName is used to specify a predefined cloud such as aws or azure that Juju works with out of the box
-	// If unspecified, a Cloud must be provided
-	// +optional
-	CloudName string `json:"cloudName,omitempty"`
+	// Cloud is used to define the cloud the Charmed Kubernetes machine model will reside in
+	Cloud *Cloud `json:"cloud"`
 
-	// Cloud is used to define a cloud for clouds that Juju does not work with out of the box
-	// such as VSphere.
-	// If unspecified, a CloudName must be provided
+	ControlPlaneConfig *apiextensionsv1.JSON `json:"controlPlaneConfig,omitempty"`
+
+	// Credential is used to specify the name and namespace of the secret containing cloud credentials if your cloud requires them
 	// +optional
-	Cloud *Cloud `json:"cloud,omitempty"`
+	Credential Credential `json:"credential,omitempty"`
 
 	// Required fields for infra providers
 	// ControlPlaneEndpoint represents the endpoint used to communicate with the control plane.

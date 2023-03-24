@@ -11,9 +11,21 @@ metadata:
 spec:
   # using loadbalancer requires metallb on vsphere
   controllerServiceType: loadbalancer
+  credential:
+    credentialSecretName: jujucluster-sample-credential-secret
+    credentialSecretNamespace: default
   cloud:
     name: jujucluster-sample
     type: vsphere
+    config:
+      asdf: asdf
+      asdfasdf: false
+      number: 1
+    regionConfig:
+      Boston:
+        asdf: "asdf"
+        asdfasdf: false
+        number: 2
     endpoint: 10.246.152.100
     regions:
       - name: Boston

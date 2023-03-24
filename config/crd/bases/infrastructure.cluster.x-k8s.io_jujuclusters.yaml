@@ -36,9 +36,8 @@ spec:
             description: JujuClusterSpec defines the desired state of JujuCluster
             properties:
               cloud:
-                description: Cloud is used to define a cloud for clouds that Juju
-                  does not work with out of the box such as VSphere. If unspecified,
-                  a CloudName must be provided
+                description: Cloud is used to define the cloud the Charmed Kubernetes
+                  machine model will reside in
                 properties:
                   CACertificates:
                     description: CACertificates contains an optional list of Certificate
@@ -55,13 +54,13 @@ spec:
                       type: string
                     type: array
                   config:
-                    additionalProperties:
-                      type: string
                     description: Config contains optional cloud-specific configuration
                       to use when bootstrapping Juju in this cloud. The cloud configuration
                       will be combined with Juju-generated, and user-supplied values;
-                      user-supplied values taking precedence.
-                    type: object
+                      user-supplied values taking precedence. This should be a map[string]interface{},
+                      but kube-builder does not allow interface{} types so we are
+                      forced to use untyped JSON here
+                    x-kubernetes-preserve-unknown-fields: true
                   description:
                     description: Description describes the type of cloud.
                     type: string
@@ -85,14 +84,13 @@ spec:
                     description: Name of the cloud.
                     type: string
                   regionConfig:
-                    additionalProperties:
-                      additionalProperties:
-                        type: string
-                      type: object
                     description: RegionConfig contains optional region specific configuration.
                       Like Config above, this will be combined with Juju-generated
                       and user supplied values; with user supplied values taking precedence.
-                    type: object
+                      This should be a map[string]map[string]interface{}, but kube-builder
+                      does not allow interface{} types so we are forced to use untyped
+                      JSON here
+                    x-kubernetes-preserve-unknown-fields: true
                   regions:
                     description: "Regions are the regions available in the cloud.
                       \n Regions is a slice, and not a map, because order is important.
@@ -139,11 +137,8 @@ spec:
                 - name
                 - type
                 type: object
-              cloudName:
-                description: CloudName is used to specify a predefined cloud such
-                  as aws or azure that Juju works with out of the box If unspecified,
-                  a Cloud must be provided
-                type: string
+              controlPlaneConfig:
+                x-kubernetes-preserve-unknown-fields: true
               controlPlaneEndpoint:
                 description: Required fields for infra providers ControlPlaneEndpoint
                   represents the endpoint used to communicate with the control plane.
@@ -165,12 +160,30 @@ spec:
                   will be created for the juju controller. Should be cluster, loadbalancer,
                   or external
                 type: string
+              credential:
+                description: Credential is used to specify the name and namespace
+                  of the secret containing cloud credentials if your cloud requires
+                  them
+                properties:
+                  credentialSecretName:
+                    description: CredentialSecretName is used to tell the controller
+                      the name of the secret containing the cloud credentials
+                    type: string
+                  credentialSecretNamespace:
+                    description: CredentialSecretNamespace is used to tell the controller
+                      the namespace of the secret containing the cloud credentials
+                    type: string
+                required:
+                - credentialSecretName
+                - credentialSecretNamespace
+                type: object
               failureMessage:
                 type: string
               failureReason:
                 description: Optional fields for infra providers
                 type: string
             required:
+            - cloud
             - controllerServiceType
             type: object
           status:

@@ -28,6 +28,7 @@ import (
 	"github.com/juju/juju/cloud"
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/life"
+	"github.com/juju/names/v4"
 	"github.com/pkg/errors"
 	"gopkg.in/yaml.v3"
 	kbatch "k8s.io/api/batch/v1"
@@ -115,14 +116,19 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, nil
 	}
 
-	// Check if a secret containing cloud user data has been created yet
-	cloudSecret, err := r.getCloudSecret(ctx, jujuCluster)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	if cloudSecret == nil {
-		log.Info(fmt.Sprintf("secret %s not found in namespace %s, please create it", jujuCluster.Name+"-cloud-secret", jujuCluster.Namespace))
-		return ctrl.Result{Requeue: true}, nil
+	var credentialSecret *kcore.Secret = nil
+	// If cloud has auth types, check for a credential secret before doing anything else
+	// A cloud with 0 auth types means credentials are not required
+	if len(jujuCluster.Spec.Cloud.AuthTypes) > 0 {
+		// Check if a secret containing cloud credentials has been created yet
+		credentialSecret, err = r.getCredentialSecret(ctx, jujuCluster)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if credentialSecret == nil {
+			log.Info(fmt.Sprintf("secret %s not found in namespace %s, please create it", jujuCluster.Spec.Credential.CredentialSecretName, jujuCluster.Spec.Credential.CredentialSecretNamespace))
+			return ctrl.Result{Requeue: true}, nil
+		}
 	}
 
 	// Check if a juju controller has been created yet via the job
@@ -300,13 +306,8 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		log.Error(err, "error creating registration secret")
 		return ctrl.Result{}, err
 	}
-	cloudName, err := getCloudName(ctx, jujuCluster)
-	if err != nil {
-		log.Error(err, "error getting cloud name")
-		return ctrl.Result{}, err
-	}
 	cloudExistsInput := juju.CloudExistsInput{
-		Name: cloudName,
+		Name: jujuCluster.Spec.Cloud.Name,
 	}
 	cloudExists, err := jujuClient.Clouds.CloudExists(ctx, cloudExistsInput)
 	if err != nil {
@@ -314,12 +315,8 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
-	if !cloudExists && jujuCluster.Spec.CloudName != "" {
-		log.Error(err, "cloud was not found, ensure cloudName is correct", "cloud", cloudName)
-		return ctrl.Result{}, err
-	}
-	if !cloudExists && jujuCluster.Spec.Cloud != nil {
-		log.Info("cloud not found, creating it now", "cloud", cloudName)
+	if !cloudExists {
+		log.Info("cloud not found, creating it now", "cloud", jujuCluster.Spec.Cloud.Name)
 		err = createCloud(ctx, jujuCluster, jujuClient)
 		if err != nil {
 			log.Error(err, "failed to add cloud")
@@ -328,24 +325,33 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{RequeueAfter: requeueTime}, nil
 	}
 
-	// Check if credential has been created yet
-	credExistsInput := juju.CredentialExistsInput{
-		CredentialName: jujuCluster.Name,
-		CloudName:      jujuCluster.Name,
-	}
-	credentialExists, err := jujuClient.Credentials.CredentialExists(ctx, credExistsInput)
-	if err != nil {
-		log.Error(err, "failed to query existing credentials")
-		return ctrl.Result{}, err
-	}
-	if !credentialExists {
-		log.Info("credential not found, creating it now")
-		err = createCredential(ctx, cloudSecret, jujuCluster, jujuClient)
+	if len(jujuCluster.Spec.Cloud.AuthTypes) > 0 {
+		// Check if credential has been created yet
+		credExistsInput := juju.CredentialExistsInput{
+			CredentialName: jujuCluster.Name,
+			CloudName:      jujuCluster.Name,
+		}
+		credentialExists, err := jujuClient.Credentials.CredentialExists(ctx, credExistsInput)
 		if err != nil {
-			log.Error(err, "failed to add credential")
+			log.Error(err, "failed to query existing credentials")
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{RequeueAfter: requeueTime}, nil
+		if !credentialExists {
+			log.Info("credential not found, creating it now")
+			// We shouldn't hit this as we check for secret very early on, but in case its gone we need to requeue
+			if credentialSecret == nil {
+				log.Info(fmt.Sprintf("secret %s not found in namespace %s, please create it", jujuCluster.Spec.Credential.CredentialSecretName, jujuCluster.Spec.Credential.CredentialSecretNamespace))
+				return ctrl.Result{Requeue: true}, nil
+			}
+			err = createCredential(ctx, credentialSecret, jujuCluster, jujuClient)
+			if err != nil {
+				log.Error(err, "failed to add credential")
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{RequeueAfter: requeueTime}, nil
+		}
+	} else {
+		log.Info("cloud does have any auth types, skipping credential creation since this indicates credentials are not required", "cloud", jujuCluster.Spec.Cloud.Name)
 	}
 
 	// Check if model has been created yet
@@ -661,14 +667,14 @@ func getJujuConfigFromSecret(ctx context.Context, jujuCluster *infrastructurev1b
 
 }
 
-func (r *JujuClusterReconciler) getCloudSecret(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster) (*kcore.Secret, error) {
+func (r *JujuClusterReconciler) getCredentialSecret(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster) (*kcore.Secret, error) {
 	// Check if a secret containing cloud user data has been created yet
-	cloudSecret := &kcore.Secret{}
+	credentialSecret := &kcore.Secret{}
 	objectKey := client.ObjectKey{
-		Namespace: jujuCluster.Namespace,
-		Name:      jujuCluster.Name + "-cloud-secret",
+		Namespace: jujuCluster.Spec.Credential.CredentialSecretNamespace,
+		Name:      jujuCluster.Spec.Credential.CredentialSecretName,
 	}
-	if err := r.Get(ctx, objectKey, cloudSecret); err != nil {
+	if err := r.Get(ctx, objectKey, credentialSecret); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, nil
 		} else {
@@ -676,7 +682,7 @@ func (r *JujuClusterReconciler) getCloudSecret(ctx context.Context, jujuCluster 
 		}
 	}
 
-	return cloudSecret, nil
+	return credentialSecret, nil
 }
 
 func (r *JujuClusterReconciler) getBootstrapJob(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster) (*kbatch.Job, error) {
@@ -696,11 +702,9 @@ func (r *JujuClusterReconciler) getBootstrapJob(ctx context.Context, jujuCluster
 }
 
 func createCloud(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster, client *juju.Client) error {
-
-	if jujuCluster.Spec.Cloud == nil {
-		return errors.New("Spec.Cloud was nil")
-	}
-
+	// Convert spec.Cloud to a juju cloud.Cloud by marshalling to JSON, then unmarshalling to juju cloud type
+	// This is done because juju cloud struct contains interface{} for some types, which is not allowed in kube-builder structs
+	// so a new cloud struct had to be provided to conform with kube-builder expectations
 	cloudJson, err := json.Marshal(jujuCluster.Spec.Cloud)
 	if err != nil {
 		return err
@@ -720,21 +724,61 @@ func createCloud(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuClu
 	return client.Clouds.AddCloud(ctx, addCloudInput)
 }
 
-func createCredential(ctx context.Context, cloudSecret *kcore.Secret, jujuCluster *infrastructurev1beta1.JujuCluster, client *juju.Client) error {
-	username := string(cloudSecret.Data["username"][:])
-	password := string(cloudSecret.Data["password"][:])
-	vmfolder := string(cloudSecret.Data["vmfolder"][:])
-	credential := cloud.NewCredential("userpass", map[string]string{
-		"user":     username,
-		"password": password,
-		"vmfolder": vmfolder,
-	})
-	addCredInput := juju.AddCredentialInput{
-		Credential:     credential,
-		CredentialName: jujuCluster.Name,
-		CloudName:      jujuCluster.Name,
+func createCredential(ctx context.Context, credentialSecret *kcore.Secret, jujuCluster *infrastructurev1beta1.JujuCluster, client *juju.Client) error {
+	log := log.FromContext(ctx)
+	// capi secrets (kubeconfig, etc) generally have a value key containing the data, so that format is also used for the credential secret
+	data, ok := credentialSecret.Data["value"]
+	if !ok {
+		log.Error(nil, "credential secret does not have correct format, missing key", "key", "value")
+		return errors.New("invalid format")
 	}
-	return client.Credentials.AddCredential(ctx, addCredInput)
+
+	specifiedCredentials, err := cloud.ParseCredentials(data)
+	if err != nil {
+		log.Error(err, "error parsing credentials")
+		return err
+	}
+
+	credentials, ok := specifiedCredentials[jujuCluster.Spec.Cloud.Name]
+	if !ok {
+		return errors.Errorf("did not find credentials for cloud %s in specified credentials", jujuCluster.Spec.Cloud.Name)
+	}
+
+	validAuthType := func(authType cloud.AuthType) bool {
+		for _, authT := range jujuCluster.Spec.Cloud.AuthTypes {
+			if string(authT) == string(authType) {
+				return true
+			}
+		}
+		return false
+	}
+	added := map[string]cloud.Credential{}
+	for name, cred := range credentials.AuthCredentials {
+		if !names.IsValidCloudCredentialName(name) {
+			return errors.Errorf("%q is not a valid credential name", name)
+		}
+
+		if !validAuthType(cred.AuthType()) {
+			return errors.Errorf("credential %q contains invalid auth type %q, valid auth types for cloud %q are %v", name, cred.AuthType(), jujuCluster.Spec.Cloud.Name, jujuCluster.Spec.Cloud.AuthTypes)
+		}
+
+		added[name] = cred
+	}
+
+	if len(added) != 1 {
+		return errors.Errorf("expected 1 credential, got %d", len(added))
+	}
+
+	for name, cred := range added {
+		addCredInput := juju.AddCredentialInput{
+			Credential:     cred,
+			CredentialName: name,
+			CloudName:      jujuCluster.Spec.Cloud.Name,
+		}
+		err = client.Credentials.AddCredential(ctx, addCredInput)
+	}
+
+	return err
 }
 
 func createModel(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster, client *juju.Client) (*juju.CreateModelResponse, error) {
@@ -983,19 +1027,4 @@ func (r *JujuClusterReconciler) createRegistrationSecretIfNeeded(ctx context.Con
 	}
 
 	return nil
-}
-
-func getCloudName(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster) (string, error) {
-	if jujuCluster.Spec.CloudName != "" && jujuCluster.Spec.Cloud != nil {
-		return "", errors.New("cloudName and cloud cannot both be specified, you must use one or the other")
-	}
-
-	if jujuCluster.Spec.CloudName != "" {
-		return jujuCluster.Spec.CloudName, nil
-	} else if jujuCluster.Spec.Cloud != nil && jujuCluster.Spec.Cloud.Name != "" {
-		return jujuCluster.Spec.Cloud.Name, nil
-	} else {
-		return "", errors.New("cloudName could not be found in the spec")
-	}
-
 }
