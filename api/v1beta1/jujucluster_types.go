@@ -154,8 +154,10 @@ func deepCopy(dst interface{}, src interface{}) {
 	}
 }
 
+// We are only able to do this since constraints.Value has json-tagged fields
 type ConstraintValue constraints.Value
 
+// Since the underlying type constraints.Value does not have a deep copy method and it cant be generated, we have to provide our own
 func (cv *ConstraintValue) DeepCopy() *ConstraintValue {
 	out := new(ConstraintValue)
 	deepCopy(out, cv)
@@ -163,12 +165,12 @@ func (cv *ConstraintValue) DeepCopy() *ConstraintValue {
 }
 
 type Model struct {
-	Name           string               `json:"name"`
-	Cloud          string               `json:"cloud"`
-	CloudRegion    string               `json:"cloudRegion,omitempty"`
-	CredentialName string               `json:"credentialName,omitempty"`
-	Config         apiextensionsv1.JSON `json:"config,omitempty"`
-	Constraints    *ConstraintValue     `json:"constraints,omitempty"`
+	Name           string                `json:"name"`
+	Cloud          string                `json:"cloud"`
+	CloudRegion    string                `json:"cloudRegion,omitempty"`
+	CredentialName string                `json:"credentialName,omitempty"`
+	Config         *apiextensionsv1.JSON `json:"config,omitempty"`
+	Constraints    *ConstraintValue      `json:"constraints,omitempty"`
 }
 
 // JujuClusterSpec defines the desired state of JujuCluster
@@ -182,16 +184,15 @@ type JujuClusterSpec struct {
 	//+kubebuilder:default="cluster"
 	ControllerServiceType string `json:"controllerServiceType"`
 
+	// Model is used to specify the details of the model created by the controller
 	Model *Model `json:"model"`
 
 	// Cloud is used to define the cloud the Charmed Kubernetes machine model will reside in
 	Cloud *Cloud `json:"cloud"`
 
-	ControlPlaneConfig *apiextensionsv1.JSON `json:"controlPlaneConfig,omitempty"`
-
 	// Credential is used to specify the name and namespace of the secret containing cloud credentials if your cloud requires them
 	// +optional
-	Credential Credential `json:"credential,omitempty"`
+	Credential *Credential `json:"credential,omitempty"`
 
 	// Required fields for infra providers
 	// ControlPlaneEndpoint represents the endpoint used to communicate with the control plane.

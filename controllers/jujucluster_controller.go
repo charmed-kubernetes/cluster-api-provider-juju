@@ -702,19 +702,24 @@ func (r *JujuClusterReconciler) getBootstrapJob(ctx context.Context, jujuCluster
 }
 
 func createCloud(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster, client *juju.Client) error {
+	log := log.FromContext(ctx)
 	// Convert spec.Cloud to a juju cloud.Cloud by marshalling to JSON, then unmarshalling to juju cloud type
 	// This is done because juju cloud struct contains interface{} for some types, which is not allowed in kube-builder structs
 	// so a new cloud struct had to be provided to conform with kube-builder expectations
 	cloudJson, err := json.Marshal(jujuCluster.Spec.Cloud)
 	if err != nil {
+		log.Error(err, "error marshalling cloud")
 		return err
 	}
+	log.Info("successfully marshalled cloud")
 
 	jujuCloud := &cloud.Cloud{}
 	err = json.Unmarshal(cloudJson, jujuCloud)
 	if err != nil {
+		log.Error(err, "error unmarshalling cloud")
 		return err
 	}
+	log.Info("successfully unmarshalled cloud")
 
 	// Force must be true when adding a non-k8s cloud to a in-k8s juju controller
 	addCloudInput := juju.AddCloudInput{
@@ -782,18 +787,29 @@ func createCredential(ctx context.Context, credentialSecret *kcore.Secret, jujuC
 }
 
 func createModel(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster, client *juju.Client) (*juju.CreateModelResponse, error) {
+	log := log.FromContext(ctx)
+
 	config := make(map[string]interface{})
-	config["juju-http-proxy"] = "http://squid.internal:3128"
-	config["apt-http-proxy"] = "http://squid.internal:3128"
-	config["snap-http-proxy"] = "http://squid.internal:3128"
-	config["juju-https-proxy"] = "http://squid.internal:3128"
-	config["apt-https-proxy"] = "http://squid.internal:3128"
-	config["snap-https-proxy"] = "http://squid.internal:3128"
-	config["apt-no-proxy"] = "localhost,127.0.0.1,ppa.launchpad.net,launchpad.net"
-	config["juju-no-proxy"] = "localhost,127.0.0.1,0.0.0.0,ppa.launchpad.net,launchpad.net,10.0.8.0/24,10.246.154.0/24"
-	config["logging-config"] = "<root>=DEBUG"
-	config["datastore"] = "vsanDatastore"
-	config["primary-network"] = "VLAN_2764"
+	if jujuCluster.Spec.Model.Config != nil {
+		configJson, err := json.Marshal(jujuCluster.Spec.Model.Config)
+		if err != nil {
+			log.Error(err, "error marshalling model config")
+			return nil, err
+		}
+		log.Info("successfully marshalled config")
+
+		err = json.Unmarshal(configJson, &config)
+		if err != nil {
+			log.Error(err, "error unmarshalling model config")
+			return nil, err
+		}
+		log.Info("successfully unmarshalled config")
+	}
+
+	cons := constraints.Value{}
+	if jujuCluster.Spec.Model.Constraints != nil {
+		cons = constraints.Value(*jujuCluster.Spec.Model.Constraints)
+	}
 
 	createModelInput := juju.CreateModelInput{
 		Name:           jujuCluster.Spec.Model.Name,
@@ -801,7 +817,7 @@ func createModel(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuClu
 		CloudRegion:    jujuCluster.Spec.Model.CloudRegion,
 		CredentialName: jujuCluster.Spec.Model.CredentialName,
 		Config:         config,
-		Constraints:    constraints.Value(*jujuCluster.Spec.Model.Constraints),
+		Constraints:    cons,
 	}
 
 	response, err := client.Models.CreateModel(ctx, createModelInput)

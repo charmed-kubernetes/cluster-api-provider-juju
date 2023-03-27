@@ -163,11 +163,16 @@ func (c *modelsClient) CreateModel(ctx context.Context, input CreateModelInput) 
 	client := modelmanager.NewClient(conn)
 	defer client.Close()
 
-	id := fmt.Sprintf("%s/%s/%s", input.Cloud, currentUser, input.CredentialName)
-	if !names.IsValidCloudCredential(id) {
-		return &CreateModelResponse{}, errors.Errorf("%q is not a valid credential id", id)
+	cloudCredTag := names.CloudCredentialTag{}
+	if input.CredentialName != "" {
+		// this cloud has creds specified, so we need to make a tag
+		id := fmt.Sprintf("%s/%s/%s", input.Cloud, currentUser, input.CredentialName)
+		if !names.IsValidCloudCredential(id) {
+			return &CreateModelResponse{}, errors.Errorf("%q is not a valid credential id", id)
+		}
+		cloudCredTag = names.NewCloudCredentialTag(id)
 	}
-	cloudCredTag := names.NewCloudCredentialTag(id)
+
 	modelInfo, err := client.CreateModel(input.Name, currentUser, input.Cloud, input.CloudRegion, cloudCredTag, input.Config)
 	if err != nil {
 		return nil, err

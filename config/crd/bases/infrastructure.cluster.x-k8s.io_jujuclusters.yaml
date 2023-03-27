@@ -137,8 +137,6 @@ spec:
                 - name
                 - type
                 type: object
-              controlPlaneConfig:
-                x-kubernetes-preserve-unknown-fields: true
               controlPlaneEndpoint:
                 description: Required fields for infra providers ControlPlaneEndpoint
                   represents the endpoint used to communicate with the control plane.
@@ -183,6 +181,8 @@ spec:
                 description: Optional fields for infra providers
                 type: string
               model:
+                description: Model is used to specify the details of the model created
+                  by the controller
                 properties:
                   cloud:
                     type: string
@@ -191,11 +191,8 @@ spec:
                   config:
                     x-kubernetes-preserve-unknown-fields: true
                   constraints:
-                    description: Value describes a user's requirements of the hardware
-                      on which units of an application will run. Constraints are used
-                      to choose an existing machine onto which a unit will be deployed,
-                      or to provision a new machine if no existing one satisfies the
-                      requirements.
+                    description: We are only able to do this since constraints.Value
+                      has json-tagged fields
                     properties:
                       allocate-public-ip:
                         description: AllocatePublicIP, if nil or true, signals that
