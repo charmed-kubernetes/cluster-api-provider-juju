@@ -103,9 +103,39 @@ You should see output similar to the following:
 ```
 
 8. Create a secret containing your cloud credential data:
-The cluster controller needs cloud credential information in order to create models and machines via juju. It expects the secret to be named with the format `<your-juju-cluster-name>-cloud-secret` and be created in the namespace you are going to create your cluster in. The command below will create a secret that should work with the sample resources that will be created in step 7.
+The cluster controller needs cloud credential information in order to create models and machines via juju. You will need to create a secret using a credential yaml file for your respective cloud. 
+Below is an example yaml file for vsphere:
+```yaml
+# This is an example vsphere credential file
+# see https://juju.is/docs/olm/add-credentials#heading--use-a-yaml-file for details regarding other clouds
+credentials:
+  jujucluster-sample: # cloud name
+    jujucluster-sample: # credential name
+      auth-type: userpass
+      password: a_password
+      user: a_user
+      vmfolder: a_folder
+```
+
+You can create a secret containing a value key populated with the contents of the yaml file like so:
+
 ```sh
-kubectl create secret generic jujucluster-sample-cloud-secret --from-literal=username='your-username' --from-literal=password='your-password' --from-literal=vmfolder='your-vm-folder' -n default
+kubectl create secret generic jujucluster-sample-credential-secret --from-file=value=./your_creds.yaml -n default
+```
+
+You can name the secret whatever you want, but you will need to provide the name and namespace of the secret in the cloud portion of your cluster spec. Also note that the cloud and credential name in the model portion of the spec must match the cloud and credential name provided in the yaml contained in the secret.
+
+```yaml
+spec:
+  ...
+  model:
+    name: jujucluster-sample
+    cloud: jujucluster-sample 
+    ...
+    credentialName: jujucluster-sample
+  credential:
+    credentialSecretName: jujucluster-sample-credential-secret
+    credentialSecretNamespace: default
 ```
 
 7. Create the sample cluster resources:
@@ -121,47 +151,40 @@ Eventually it should create a model, at which point reconciliation should stop.
 ```
 
 ### Connecting the deployed controller to a local Juju client
-1. Find the IP of the Juju controller service
+The cluster controller creates a secret containing a Juju registration string that you can use to connect your local Juju client. Assuming your cluster is in the default namespace, you can list all secrets:
 ```sh
-kubectl get svc -n controller-jujucluster-sample-k8s-cloud
+kubectl get secrets
 ```
 
-2. Create an ssh shuttle:
+The registration secret is named `<your-cluster-name>-registration-secret`. List the contents of the secret.
 ```sh
-sshuttle -r ubuntu@<control-plane-IP> <svc-IP> --ssh-cmd 'ssh -i ~/.local/share/juju/ssh/juju_id_rsa'
+kubectl get secret <your-cluster-name>-registration-secret -o jsonpath='{.data}'
 ```
 
-Note that the first IP after the `@` is the IP of the Kubernetes-Control-Plane application as shown by running `juju status`. The second IP should be the cluster IP of the controller service obtained above. 
-
-3. Add the controller using the registration string:
-
-The bootstrap job created by the cluster controller contains a registration string in its logs that you can use to add the controller to your local client. You can find it by first finding the name of the pod created by the boostrap job in the default namespace:
+The output of the command above will look similar to the following:
 ```sh
-kubectl get pods -n default
+{"registration-string":"<encoded_data>"}
 ```
 
-Check the logs using:
+The encoded registration data is contained in the key `registration-string`. You can decode the data contained in that key with the following command:
 ```sh
-kubectl logs <bootstrap-pod-name> -n default
-```
-There should be some lines present that look something like this:
-```sh
-Please send this command to capi-juju:
-    juju register <registration-string>
-```
-Using your local juju client you can register the controller that was created. You will be promted to create a username and password:
-```sh
-juju register <registration-string>
+echo '<encoded_data>' | base64 --decode
 ```
 
-4. Login to the admin account
-The pod logs also contain the admin account information. Logout of the current account, and into the admin account, providing the password found in the pod logs:
-```
-juju logout
-juju login -u admin -c jujucluster-sample-k8s-cloud
+The above command will output the decoded registration string, which you can then pass to the `juju register` command:
+```sh
+juju register <registration_string>
 ```
 
-Once this is done, you should be able to list clouds, credentials, and models that exist on the controller, which is helpful for debugging. 
+You will be prompted to enter a new password for the account, and choose a controller name (accepting the default name is fine). You can then switch to the model for your cluster. The account does not have write access to the model, but it can be helpful for debugging. 
+
+If you need to modify the model, you will need to use the admin account credentials contained in the `juju-controller-data` secret of your cluster's namespace. You can follow a similar secret decoding process described above to get the admin password, and then logout of the non-admin account, and login as admin:
+```sh
+juju logout 
+juju login -u admin -c <controller-name>
+```
+
+You will then be prompted for the admin password from the `juju-controller-data` secret. 
 
 ### Tearing things down
 1.  Delete the sample resources:
