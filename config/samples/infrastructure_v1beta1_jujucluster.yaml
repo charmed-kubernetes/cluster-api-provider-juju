@@ -27,6 +27,7 @@ spec:
       logging-config: "<root>=DEBUG"
       datastore: "vsanDatastore"
       primary-network: "VLAN_2764"
+      force-vm-hardware-version: "17"
     constraints:
       arch: amd64
   controllerServiceType: loadbalancer
