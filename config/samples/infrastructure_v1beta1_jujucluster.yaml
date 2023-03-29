@@ -9,12 +9,9 @@ metadata:
     app.kubernetes.io/created-by: cluster-api-provider-juju
   name: jujucluster-sample
 spec:
-  # using loadbalancer requires metallb on vsphere
   model:
     name: jujucluster-sample
-    cloud: jujucluster-sample 
     cloudRegion: Boston
-    credentialName: jujucluster-sample
     config: 
       juju-http-proxy: "http://squid.internal:3128"
       apt-http-proxy: "http://squid.internal:3128"
@@ -30,6 +27,7 @@ spec:
       force-vm-hardware-version: "17"
     constraints:
       arch: amd64
+  # using loadbalancer requires metallb on vsphere
   controllerServiceType: loadbalancer
   credential:
     credentialSecretName: jujucluster-sample-credential-secret

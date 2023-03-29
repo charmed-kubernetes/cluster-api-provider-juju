@@ -139,7 +139,7 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
-	modelUUID, err := client.Models.GetModelUUID(ctx, jujuCluster.Name)
+	modelUUID, err := client.Models.GetModelUUID(ctx, jujuCluster.Spec.Model.Name)
 	if err != nil {
 		log.Error(err, "failed to retrieve modelUUID")
 		return ctrl.Result{}, err

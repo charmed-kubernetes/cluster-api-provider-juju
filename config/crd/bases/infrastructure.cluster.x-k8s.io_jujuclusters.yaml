@@ -184,8 +184,6 @@ spec:
                 description: Model is used to specify the details of the model created
                   by the controller
                 properties:
-                  cloud:
-                    type: string
                   cloudRegion:
                     type: string
                   config:
@@ -279,12 +277,9 @@ spec:
                           type: string
                         type: array
                     type: object
-                  credentialName:
-                    type: string
                   name:
                     type: string
                 required:
-                - cloud
                 - name
                 type: object
             required:

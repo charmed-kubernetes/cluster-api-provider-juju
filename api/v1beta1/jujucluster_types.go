@@ -165,12 +165,10 @@ func (cv *ConstraintValue) DeepCopy() *ConstraintValue {
 }
 
 type Model struct {
-	Name           string                `json:"name"`
-	Cloud          string                `json:"cloud"`
-	CloudRegion    string                `json:"cloudRegion,omitempty"`
-	CredentialName string                `json:"credentialName,omitempty"`
-	Config         *apiextensionsv1.JSON `json:"config,omitempty"`
-	Constraints    *ConstraintValue      `json:"constraints,omitempty"`
+	Name        string                `json:"name"`
+	CloudRegion string                `json:"cloudRegion,omitempty"`
+	Config      *apiextensionsv1.JSON `json:"config,omitempty"`
+	Constraints *ConstraintValue      `json:"constraints,omitempty"`
 }
 
 // JujuClusterSpec defines the desired state of JujuCluster

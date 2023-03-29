@@ -123,16 +123,11 @@ You can create a secret containing a value key populated with the contents of th
 kubectl create secret generic jujucluster-sample-credential-secret --from-file=value=./your_creds.yaml -n default
 ```
 
-You can name the secret whatever you want, but you will need to provide the name and namespace of the secret in the cloud portion of your cluster spec. Also note that the cloud and credential name in the model portion of the spec must match the cloud and credential name provided in the yaml contained in the secret.
+You can name the secret whatever you want, but you will need to provide the name and namespace of the secret in the cloud portion of your cluster spec. 
 
 ```yaml
 spec:
   ...
-  model:
-    name: jujucluster-sample
-    cloud: jujucluster-sample 
-    ...
-    credentialName: jujucluster-sample
   credential:
     credentialSecretName: jujucluster-sample-credential-secret
     credentialSecretNamespace: default
