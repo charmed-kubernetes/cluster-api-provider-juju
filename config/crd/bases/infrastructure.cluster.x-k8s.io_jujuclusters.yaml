@@ -35,8 +35,108 @@ spec:
           spec:
             description: JujuClusterSpec defines the desired state of JujuCluster
             properties:
-              cloudEndpoint:
-                type: string
+              cloud:
+                description: Cloud is used to define the cloud the Charmed Kubernetes
+                  machine model will reside in
+                properties:
+                  CACertificates:
+                    description: CACertificates contains an optional list of Certificate
+                      Authority certificates to be used to validate certificates of
+                      cloud infrastructure components The contents are Base64 encoded
+                      x.509 certs.
+                    items:
+                      type: string
+                    type: array
+                  authTypes:
+                    description: AuthTypes are the authentication modes supported
+                      by the cloud.
+                    items:
+                      type: string
+                    type: array
+                  config:
+                    description: Config contains optional cloud-specific configuration
+                      to use when bootstrapping Juju in this cloud. The cloud configuration
+                      will be combined with Juju-generated, and user-supplied values;
+                      user-supplied values taking precedence. This should be a map[string]interface{},
+                      but kube-builder does not allow interface{} types so we are
+                      forced to use untyped JSON here
+                    x-kubernetes-preserve-unknown-fields: true
+                  description:
+                    description: Description describes the type of cloud.
+                    type: string
+                  endpoint:
+                    description: Endpoint is the default endpoint for the cloud regions,
+                      may be overridden by a region.
+                    type: string
+                  hostCloudRegion:
+                    description: HostCloudRegion represents the k8s host cloud. The
+                      format is <cloudType>/<region>.
+                    type: string
+                  identityEndpoint:
+                    description: IdentityEndpoint is the default identity endpoint
+                      for the cloud regions, may be overridden by a region.
+                    type: string
+                  isControllerCloud:
+                    description: IsControllerCloud is true when this is the cloud
+                      used by the controller.
+                    type: boolean
+                  name:
+                    description: Name of the cloud.
+                    type: string
+                  regionConfig:
+                    description: RegionConfig contains optional region specific configuration.
+                      Like Config above, this will be combined with Juju-generated
+                      and user supplied values; with user supplied values taking precedence.
+                      This should be a map[string]map[string]interface{}, but kube-builder
+                      does not allow interface{} types so we are forced to use untyped
+                      JSON here
+                    x-kubernetes-preserve-unknown-fields: true
+                  regions:
+                    description: "Regions are the regions available in the cloud.
+                      \n Regions is a slice, and not a map, because order is important.
+                      The first region in the slice is the default region for the
+                      cloud."
+                    items:
+                      properties:
+                        endpoint:
+                          description: Endpoint is the region's primary endpoint URL.
+                          type: string
+                        identityEndpoint:
+                          description: IdentityEndpoint is the region's identity endpoint
+                            URL. If the cloud/region does not have an identity-specific
+                            endpoint URL, this will be empty.
+                          type: string
+                        name:
+                          description: Name is the name of the region.
+                          type: string
+                        storageEndpoint:
+                          description: StorageEndpoint is the region's storage endpoint
+                            URL. If the cloud/region does not have a storage-specific
+                            endpoint URL, this will be empty.
+                          type: string
+                      required:
+                      - endpoint
+                      - name
+                      type: object
+                    type: array
+                  skipTLSVerify:
+                    description: SkipTLSVerify is true if the client should be asked
+                      not to validate certificates. It is not recommended for production
+                      clouds. It is secure (false) by default.
+                    type: boolean
+                  storageEndpoint:
+                    description: StorageEndpoint is the default storage endpoint for
+                      the cloud regions, may be overridden by a region.
+                    type: string
+                  type:
+                    description: Type is the type of cloud, eg ec2, openstack etc.
+                      This is one of the provider names registered with environs.RegisterProvider.
+                    type: string
+                required:
+                - authTypes
+                - name
+                - type
+                type: object
               controlPlaneEndpoint:
                 description: Required fields for infra providers ControlPlaneEndpoint
                   represents the endpoint used to communicate with the control plane.
@@ -58,14 +158,134 @@ spec:
                   will be created for the juju controller. Should be cluster, loadbalancer,
                   or external
                 type: string
+              credential:
+                description: Credential is used to specify the name and namespace
+                  of the secret containing cloud credentials if your cloud requires
+                  them
+                properties:
+                  credentialSecretName:
+                    description: CredentialSecretName is used to tell the controller
+                      the name of the secret containing the cloud credentials
+                    type: string
+                  credentialSecretNamespace:
+                    description: CredentialSecretNamespace is used to tell the controller
+                      the namespace of the secret containing the cloud credentials
+                    type: string
+                required:
+                - credentialSecretName
+                - credentialSecretNamespace
+                type: object
               failureMessage:
                 type: string
               failureReason:
                 description: Optional fields for infra providers
                 type: string
+              model:
+                description: Model is used to specify the details of the model created
+                  by the controller
+                properties:
+                  cloudRegion:
+                    type: string
+                  config:
+                    x-kubernetes-preserve-unknown-fields: true
+                  constraints:
+                    description: We are only able to do this since constraints.Value
+                      has json-tagged fields
+                    properties:
+                      allocate-public-ip:
+                        description: AllocatePublicIP, if nil or true, signals that
+                          machines should be created with a public IP address instead
+                          of a cloud local one. The default behaviour if the value
+                          is not specified is to allocate a public IP so that public
+                          cloud behaviour works out of the box.
+                        type: boolean
+                      arch:
+                        description: Arch, if not nil or empty, indicates that a machine
+                          must run the named architecture.
+                        type: string
+                      container:
+                        description: Container, if not nil, indicates that a machine
+                          must be the specified container type.
+                        type: string
+                      cores:
+                        description: CpuCores, if not nil, indicates that a machine
+                          must have at least that number of effective cores available.
+                        format: int64
+                        type: integer
+                      cpu-power:
+                        description: CpuPower, if not nil, indicates that a machine
+                          must have at least that amount of CPU power available, where
+                          100 CpuPower is considered to be equivalent to 1 Amazon
+                          ECU (or, roughly, a single 2007-era Xeon).
+                        format: int64
+                        type: integer
+                      instance-role:
+                        description: InstanceRole, if not nil, indicates that the
+                          specified role/profile for the given cloud should be used.
+                          Only valid for clouds which support instance roles. Currently
+                          only for AWS with instance-profiles
+                        type: string
+                      instance-type:
+                        description: InstanceType, if not nil, indicates that the
+                          specified cloud instance type be used. Only valid for clouds
+                          which support instance types.
+                        type: string
+                      mem:
+                        description: Mem, if not nil, indicates that a machine must
+                          have at least that many megabytes of RAM.
+                        format: int64
+                        type: integer
+                      root-disk:
+                        description: RootDisk, if not nil, indicates that a machine
+                          must have at least that many megabytes of disk space available
+                          in the root disk. In providers where the root disk is configurable
+                          at instance startup time, an instance with the specified
+                          amount of disk space in the OS disk might be requested.
+                        format: int64
+                        type: integer
+                      root-disk-source:
+                        description: RootDiskSource, if specified, determines what
+                          storage the root disk should be allocated from. This will
+                          be provider specific - in the case of vSphere it identifies
+                          the datastore the root disk file should be created in.
+                        type: string
+                      spaces:
+                        description: Spaces, if not nil, holds a list of juju network
+                          spaces that should be available (or not) on the machine.
+                          Positive and negative values are accepted, and the difference
+                          is the latter have a "^" prefix to the name.
+                        items:
+                          type: string
+                        type: array
+                      tags:
+                        description: Tags, if not nil, indicates tags that the machine
+                          must have applied to it. An empty list is treated the same
+                          as a nil (unspecified) list, except an empty list will override
+                          any default tags, where a nil list will not.
+                        items:
+                          type: string
+                        type: array
+                      virt-type:
+                        description: VirtType, if not nil or empty, indicates that
+                          a machine must run the named virtual type. Only valid for
+                          clouds with multi-hypervisor support.
+                        type: string
+                      zones:
+                        description: Zones, if not nil, holds a list of availability
+                          zones limiting where the machine can be located.
+                        items:
+                          type: string
+                        type: array
+                    type: object
+                  name:
+                    type: string
+                required:
+                - name
+                type: object
             required:
-            - cloudEndpoint
+            - cloud
             - controllerServiceType
+            - model
             type: object
           status:
             description: JujuClusterStatus defines the observed state of JujuCluster
