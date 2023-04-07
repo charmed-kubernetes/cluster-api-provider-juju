@@ -195,9 +195,6 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		// registering our finalizer.
 		if !controllerutil.ContainsFinalizer(jujuMachine, infrastructurev1beta1.JujuMachineFinalizer) {
 			controllerutil.AddFinalizer(jujuMachine, infrastructurev1beta1.JujuMachineFinalizer)
-			// if err := r.Update(ctx, jujuMachine); err != nil {
-			// 	return ctrl.Result{}, err
-			// }
 			log.Info("added finalizer")
 
 		}
@@ -234,9 +231,6 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			// remove our finalizer
 			log.Info("removing finalizer")
 			controllerutil.RemoveFinalizer(jujuMachine, infrastructurev1beta1.JujuMachineFinalizer)
-			// if err := r.Update(ctx, jujuMachine); err != nil {
-			// 	return ctrl.Result{}, err
-			// }
 		}
 
 		// Stop reconciliation as the item is being deleted
@@ -337,7 +331,7 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				jujuMachine.Spec.ProviderID = &providerID
 				log.Info("updated JujuMachine providerID", "Spec.ProviderID", jujuMachine.Spec.ProviderID)
 				// update the nodes provider ID to match
-				node.Spec.ProviderID = *machine.Spec.ProviderID
+				node.Spec.ProviderID = *jujuMachine.Spec.ProviderID
 				updatedNode, err := kubeclient.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
 				if err != nil {
 					log.Error(err, "failed to update node")
