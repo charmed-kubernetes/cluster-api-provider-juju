@@ -49,10 +49,36 @@ spec:
                 description: Required fields for infra providers This is expected
                   to eventually be set by the machine controller
                 type: string
+              useJujuProviderID:
+                description: If true, the machine will use a providerID based on the
+                  juju instance ID If false, the machine will use the providerID from
+                  its corresponding node Note that if false you will need a cloud
+                  provider deployed in order for the provider ID to be set
+                type: boolean
+            required:
+            - useJujuProviderID
             type: object
           status:
             description: JujuMachineStatus defines the observed state of JujuMachine
             properties:
+              addresses:
+                description: Addresses contains the Juju machine associated addresses.
+                items:
+                  description: MachineAddress contains information for the node's
+                    address.
+                  properties:
+                    address:
+                      description: The machine address.
+                      type: string
+                    type:
+                      description: Machine address type, one of Hostname, ExternalIP
+                        or InternalIP.
+                      type: string
+                  required:
+                  - address
+                  - type
+                  type: object
+                type: array
               failureMessage:
                 type: string
               failureReason:

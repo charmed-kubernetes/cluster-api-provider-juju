@@ -25,6 +25,7 @@ metadata:
 spec:
   template:
     spec:
+      useJujuProviderID: false
       constraints: "cores=2,mem=8G,root-disk=16G"
 ---
 apiVersion: bootstrap.cluster.x-k8s.io/v1beta1

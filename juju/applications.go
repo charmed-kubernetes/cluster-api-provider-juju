@@ -68,6 +68,7 @@ type ReadApplicationResponse struct {
 type DestroyApplicationInput struct {
 	ApplicationName string
 	ModelUUID       string
+	Force           bool
 }
 
 type ApplicationExistsInput struct {
@@ -472,6 +473,7 @@ func (c applicationsClient) DestroyApplication(ctx context.Context, input *Destr
 			input.ApplicationName,
 		},
 		DestroyStorage: true,
+		Force:          input.Force,
 	}
 
 	_, err = applicationAPIClient.DestroyApplications(destroyParams)
@@ -565,6 +567,9 @@ func (c applicationsClient) GetApplicationsStatus(ctx context.Context, modelUUID
 
 func (c applicationsClient) AddUnits(ctx context.Context, input AddUnitsInput) ([]string, error) {
 	conn, err := c.GetConnection(ctx, &input.ModelUUID)
+	if err != nil {
+		return nil, err
+	}
 	applicationAPIClient := apiapplication.NewClient(conn)
 	defer applicationAPIClient.Close()
 

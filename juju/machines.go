@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	apiclient "github.com/juju/juju/api/client/client"
 	"github.com/juju/juju/api/client/machinemanager"
 	"github.com/juju/juju/api/client/modelmanager"
 	"github.com/juju/juju/rpc/params"
@@ -31,6 +32,11 @@ type DestroyMachineInput struct {
 }
 
 type GetMachineInput struct {
+	ModelUUID string
+	MachineID string
+}
+
+type GetMachineAddressesInput struct {
 	ModelUUID string
 	MachineID string
 }
@@ -127,4 +133,31 @@ func (c *machinesClient) GetMachine(ctx context.Context, input GetMachineInput) 
 	}
 
 	return nil, nil
+}
+
+func (c *machinesClient) GetMachineIPs(ctx context.Context, input GetMachineAddressesInput) ([]string, error) {
+	conn, err := c.GetConnection(ctx, &input.ModelUUID)
+	if err != nil {
+		return nil, err
+	}
+
+	client := apiclient.NewClient(conn)
+	defer client.Close()
+
+	status, err := client.Status(nil)
+	if err != nil {
+		return nil, err
+	}
+
+	addresses := []string{}
+	for machineID, machineStatus := range status.Machines {
+		if machineID == input.MachineID {
+			for _, iValue := range machineStatus.NetworkInterfaces {
+				addresses = append(addresses, iValue.IPAddresses...)
+			}
+		}
+	}
+
+	return addresses, nil
+
 }

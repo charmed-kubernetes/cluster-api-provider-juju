@@ -30,6 +30,7 @@ import (
 	"github.com/juju/juju/core/life"
 	"github.com/juju/names/v4"
 	"github.com/pkg/errors"
+	"golang.org/x/time/rate"
 	"gopkg.in/yaml.v3"
 	kbatch "k8s.io/api/batch/v1"
 	kcore "k8s.io/api/core/v1"
@@ -38,11 +39,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/workqueue"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	"sigs.k8s.io/cluster-api/util"
 	"sigs.k8s.io/cluster-api/util/patch"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
@@ -477,6 +480,12 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 // SetupWithManager sets up the controller with the Manager.
 func (r *JujuClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
+		WithOptions(controller.Options{
+			RateLimiter: workqueue.NewMaxOfRateLimiter(
+				workqueue.NewItemExponentialFailureRateLimiter(5*time.Millisecond, 5*time.Minute),
+				&workqueue.BucketRateLimiter{Limiter: rate.NewLimiter(rate.Limit(10), 100)},
+			),
+		}).
 		For(&infrastructurev1beta1.JujuCluster{}).
 		Owns(&kcore.Secret{}).
 		Complete(r)
@@ -904,6 +913,14 @@ func createIntegrationsIfNeeded(ctx context.Context, jujuCluster *infrastructure
 		},
 	}
 
+	// also need to create the additional integrations if specified
+	for _, endpoints := range jujuCluster.Spec.AdditionalIntegrations {
+		integrationInputs = append(integrationInputs, juju.IntegrationInput{
+			ModelUUID: modelUUID,
+			Endpoints: endpoints,
+		})
+	}
+
 	for _, integrationInput := range integrationInputs {
 		integrationExists, err := client.Integrations.IntegrationExists(ctx, &integrationInput)
 		if err != nil {
@@ -969,8 +986,9 @@ func createApplicationsIfNeeded(ctx context.Context, jujuCluster *infrastructure
 			Config: map[string]interface{}{
 				"ignore-missing-cni":      true,
 				"enable-metrics":          false,
-				"dns-provider":            "none",
 				"enable-dashboard-addons": false,
+				"allow-privileged":        true,
+				"ignore-kube-system-pods": "coredns vsphere-cloud-controller-manager",
 			},
 		},
 		{
@@ -1001,6 +1019,42 @@ func createApplicationsIfNeeded(ctx context.Context, jujuCluster *infrastructure
 			CharmBase:       "ubuntu@22.04",
 			Units:           0,
 		},
+	}
+
+	// Need to add any addtional charms as well
+	for _, charm := range jujuCluster.Spec.AdditionalApplications {
+		config := make(map[string]interface{})
+		if charm.Config != nil {
+			configJson, err := json.Marshal(charm.Config)
+			if err != nil {
+				log.Error(err, "error marshalling charm config")
+				return false, err
+			}
+
+			err = json.Unmarshal(configJson, &config)
+			if err != nil {
+				log.Error(err, "error unmarshalling charm config")
+				return false, err
+			}
+		}
+
+		cons := constraints.Value{}
+		if charm.Constraints != nil {
+			cons = constraints.Value(*charm.Constraints)
+		}
+
+		createInputs = append(createInputs, juju.CreateApplicationInput{
+			ApplicationName: charm.ApplicationName,
+			ModelUUID:       modelUUID,
+			CharmName:       charm.CharmName,
+			CharmChannel:    charm.CharmChannel,
+			CharmBase:       charm.CharmBase,
+			Units:           charm.Units,
+			Trust:           charm.Trust,
+			Config:          config,
+			Constraints:     cons,
+		})
+
 	}
 
 	for _, createInput := range createInputs {
