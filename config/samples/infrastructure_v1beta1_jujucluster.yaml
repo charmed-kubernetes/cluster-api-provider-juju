@@ -49,7 +49,7 @@ spec:
       units: 1
       config:   
         datastore: vsanDatastore
-				folder: k8s-crew-root 
+        folder: k8s-crew-root 
       trust: true
     - charmName: vsphere-cloud-provider      
       applicationName: vsphere-cloud-provider
