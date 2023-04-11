@@ -41,30 +41,31 @@ spec:
         endpoint: 10.246.152.100
     authTypes:
       - "userpass"
-  additionalApplications:
-    - charmName: vsphere-integrator      
-      applicationName: vsphere-integrator
-      charmChannel: 1.27/edge
-      charmBase: ubuntu@22.04
-      units: 1
-      config:   
-        datastore: vsanDatastore
-        folder: k8s-crew-root 
-      trust: true
-    - charmName: vsphere-cloud-provider      
-      applicationName: vsphere-cloud-provider
-      charmChannel: 1.27/edge
-      charmBase: ubuntu@22.04
-      units: 0
-  additionalIntegrations:
-    - - vsphere-cloud-provider:vsphere-integration
-      - vsphere-integrator:clients
-    - - vsphere-cloud-provider:certificates
-      - easyrsa:client
-    - - vsphere-cloud-provider:kube-control
-      - kubernetes-control-plane:kube-control
-    - - vsphere-cloud-provider:external-cloud-provider
-      - kubernetes-control-plane:external-cloud-provider
+additionalApplications:
+    applications:
+      vsphere-integrator:
+        charm: vsphere-integrator      
+        channel: 1.27/edge
+        base: ubuntu@22.04
+        numUnits: 1
+        options:   
+          datastore: vsanDatastore
+          folder: k8s-crew-root 
+        requiresTrust: true
+      vsphere-cloud-provider:
+        charm: vsphere-cloud-provider      
+        channel: 1.27/edge
+        base: ubuntu@22.04
+        numUnits: 0
+    integrations:
+      - - vsphere-cloud-provider:vsphere-integration
+        - vsphere-integrator:clients
+      - - vsphere-cloud-provider:certificates
+        - easyrsa:client
+      - - vsphere-cloud-provider:kube-control
+        - kubernetes-control-plane:kube-control
+      - - vsphere-cloud-provider:external-cloud-provider
+        - kubernetes-control-plane:external-cloud-provider
 ---
 apiVersion: cluster.x-k8s.io/v1beta1
 kind: Cluster

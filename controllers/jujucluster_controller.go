@@ -914,7 +914,7 @@ func createIntegrationsIfNeeded(ctx context.Context, jujuCluster *infrastructure
 	}
 
 	// also need to create the additional integrations if specified
-	for _, endpoints := range jujuCluster.Spec.AdditionalIntegrations {
+	for _, endpoints := range jujuCluster.Spec.AdditionalApplications.Integrations {
 		integrationInputs = append(integrationInputs, juju.IntegrationInput{
 			ModelUUID: modelUUID,
 			Endpoints: endpoints,
@@ -1022,10 +1022,10 @@ func createApplicationsIfNeeded(ctx context.Context, jujuCluster *infrastructure
 	}
 
 	// Need to add any addtional charms as well
-	for _, charm := range jujuCluster.Spec.AdditionalApplications {
+	for applicationName, charm := range jujuCluster.Spec.AdditionalApplications.Applications {
 		config := make(map[string]interface{})
-		if charm.Config != nil {
-			configJson, err := json.Marshal(charm.Config)
+		if charm.Options != nil {
+			configJson, err := json.Marshal(charm.Options)
 			if err != nil {
 				log.Error(err, "error marshalling charm config")
 				return false, err
@@ -1044,13 +1044,13 @@ func createApplicationsIfNeeded(ctx context.Context, jujuCluster *infrastructure
 		}
 
 		createInputs = append(createInputs, juju.CreateApplicationInput{
-			ApplicationName: charm.ApplicationName,
+			ApplicationName: applicationName,
 			ModelUUID:       modelUUID,
-			CharmName:       charm.CharmName,
-			CharmChannel:    charm.CharmChannel,
-			CharmBase:       charm.CharmBase,
-			Units:           charm.Units,
-			Trust:           charm.Trust,
+			CharmName:       charm.Charm,
+			CharmChannel:    charm.Channel,
+			CharmBase:       charm.Base,
+			Units:           charm.NumUnits,
+			Trust:           charm.RequiresTrust,
 			Config:          config,
 			Constraints:     cons,
 		})

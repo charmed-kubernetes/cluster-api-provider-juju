@@ -196,7 +196,7 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		if !controllerutil.ContainsFinalizer(jujuMachine, infrastructurev1beta1.JujuMachineFinalizer) {
 			controllerutil.AddFinalizer(jujuMachine, infrastructurev1beta1.JujuMachineFinalizer)
 			log.Info("added finalizer")
-
+			return ctrl.Result{}, nil
 		}
 	} else {
 		// The object is being deleted

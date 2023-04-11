@@ -172,14 +172,18 @@ type Model struct {
 }
 
 type Charm struct {
-	CharmName       string                `json:"charmName"`
-	ApplicationName string                `json:"applicationName"`
-	CharmChannel    string                `json:"charmChannel"`
-	CharmBase       string                `json:"charmBase"`
-	Units           int                   `json:"units"`
-	Config          *apiextensionsv1.JSON `json:"config,omitempty"`
-	Constraints     *ConstraintValue      `json:"constraints,omitempty"`
-	Trust           bool                  `json:"trust,omitempty"`
+	Charm         string                `json:"charm"`
+	Channel       string                `json:"channel"`
+	Base          string                `json:"base"`
+	NumUnits      int                   `json:"numUnits"`
+	Options       *apiextensionsv1.JSON `json:"options,omitempty"`
+	Constraints   *ConstraintValue      `json:"constraints,omitempty"`
+	RequiresTrust bool                  `json:"requiresTrust,omitempty"`
+}
+
+type AdditionalApplications struct {
+	Applications map[string]Charm `json:"applications"`
+	Integrations []Endpoints      `json:"integrations"`
 }
 
 // List of endpoints to use in an integration
@@ -207,10 +211,7 @@ type JujuClusterSpec struct {
 	Credential *Credential `json:"credential,omitempty"`
 
 	// List of additional applications to deploy in the model
-	AdditionalApplications []Charm `json:"additionalApplications,omitempty"`
-
-	// List of additional integrations to deploy in the model
-	AdditionalIntegrations []Endpoints `json:"additionalIntegrations,omitempty"`
+	AdditionalApplications AdditionalApplications `json:"additionalApplications,omitempty"`
 
 	// Required fields for infra providers
 	// ControlPlaneEndpoint represents the endpoint used to communicate with the control plane.
