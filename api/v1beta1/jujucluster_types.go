@@ -171,6 +171,24 @@ type Model struct {
 	Constraints *ConstraintValue      `json:"constraints,omitempty"`
 }
 
+type Charm struct {
+	Charm         string                `json:"charm"`
+	Channel       string                `json:"channel"`
+	Base          string                `json:"base"`
+	NumUnits      int                   `json:"numUnits"`
+	Options       *apiextensionsv1.JSON `json:"options,omitempty"`
+	Constraints   *ConstraintValue      `json:"constraints,omitempty"`
+	RequiresTrust bool                  `json:"requiresTrust,omitempty"`
+}
+
+type AdditionalApplications struct {
+	Applications map[string]Charm `json:"applications"`
+	Integrations []Endpoints      `json:"integrations"`
+}
+
+// List of endpoints to use in an integration
+type Endpoints []string
+
 // JujuClusterSpec defines the desired state of JujuCluster
 // +kubebuilder:object:generate=true
 type JujuClusterSpec struct {
@@ -191,6 +209,9 @@ type JujuClusterSpec struct {
 	// Credential is used to specify the name and namespace of the secret containing cloud credentials if your cloud requires them
 	// +optional
 	Credential *Credential `json:"credential,omitempty"`
+
+	// List of additional applications to deploy in the model
+	AdditionalApplications AdditionalApplications `json:"additionalApplications,omitempty"`
 
 	// Required fields for infra providers
 	// ControlPlaneEndpoint represents the endpoint used to communicate with the control plane.

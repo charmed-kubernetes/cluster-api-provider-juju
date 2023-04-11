@@ -20,26 +20,50 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"time"
 
+	infrastructurev1beta1 "github.com/charmed-kubernetes/cluster-api-provider-juju/api/v1beta1"
 	"github.com/charmed-kubernetes/cluster-api-provider-juju/juju"
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/rpc/params"
+	"golang.org/x/time/rate"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/util/connrotation"
+	"k8s.io/client-go/util/workqueue"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	"sigs.k8s.io/cluster-api/util"
+	"sigs.k8s.io/cluster-api/util/patch"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-
-	infrastructurev1beta1 "github.com/charmed-kubernetes/cluster-api-provider-juju/api/v1beta1"
 )
+
+type kubernetesClient struct {
+	*kubernetes.Clientset
+	dialer *connrotation.Dialer
+}
+
+// Close kubernetes client.
+func (k *kubernetesClient) Close() error {
+	k.dialer.CloseAll()
+	return nil
+}
+
+func newDialer() *connrotation.Dialer {
+	return connrotation.NewDialer((&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext)
+}
 
 // JujuMachineReconciler reconciles a JujuMachine object
 type JujuMachineReconciler struct {
@@ -100,6 +124,25 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{RequeueAfter: requeueTime}, nil
 	}
 
+	// Initialize the patch helper.
+	patchHelper, err := patch.NewHelper(jujuMachine, r.Client)
+	if err != nil {
+		log.Error(err, "failed to configure the patch helper")
+		return ctrl.Result{}, err
+	}
+
+	// Always attempt to Patch the JujuMachine object and status after each reconciliation.
+	defer func() {
+		log.Info("patching jujuMachine")
+		if e := patchHelper.Patch(ctx, jujuMachine); e != nil {
+			log.Error(e, "failed to patch jujuMachine")
+
+			if err == nil {
+				err = e
+			}
+		}
+	}()
+
 	// Get Infra cluster
 	jujuCluster := &infrastructurev1beta1.JujuCluster{}
 	objectKey := client.ObjectKey{
@@ -152,9 +195,6 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		// registering our finalizer.
 		if !controllerutil.ContainsFinalizer(jujuMachine, infrastructurev1beta1.JujuMachineFinalizer) {
 			controllerutil.AddFinalizer(jujuMachine, infrastructurev1beta1.JujuMachineFinalizer)
-			if err := r.Update(ctx, jujuMachine); err != nil {
-				return ctrl.Result{}, err
-			}
 			log.Info("added finalizer")
 			return ctrl.Result{}, nil
 		}
@@ -188,12 +228,9 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				log.Info(fmt.Sprintf("machine %s destroyed", *jujuMachine.Spec.MachineID))
 			}
 
-			// remove our finalizer from the list and update it.
+			// remove our finalizer
 			log.Info("removing finalizer")
 			controllerutil.RemoveFinalizer(jujuMachine, infrastructurev1beta1.JujuMachineFinalizer)
-			if err := r.Update(ctx, jujuMachine); err != nil {
-				return ctrl.Result{}, err
-			}
 		}
 
 		// Stop reconciliation as the item is being deleted
@@ -212,39 +249,20 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		log.Info(fmt.Sprintf("updating machine spec to machine: %s", result.Machine))
 		machineID := result.Machine
 		jujuMachine.Spec.MachineID = &machineID
-		if err := r.Update(ctx, jujuMachine); err != nil {
-			return ctrl.Result{}, err
-		}
-		log.Info("successfully updated JujuMachine", "Spec.Machine", jujuMachine.Spec.MachineID)
 	}
-	if jujuMachine.Spec.ProviderID == nil {
-		machineID := jujuMachine.Spec.MachineID
-		getMachineInput := juju.GetMachineInput{
-			ModelUUID: modelUUID,
-			MachineID: *machineID,
-		}
-		machine, err := client.Machines.GetMachine(ctx, getMachineInput)
-		if err != nil {
-			log.Error(err, fmt.Sprintf("failed to retrieve machine with machine ID %s", *machineID))
-			return ctrl.Result{}, err
-		}
-		log.Info("machine", "status", machine.Status)
-		if machine.Status != "started" {
-			log.Info("waiting for machine to start, requeueing")
-			return ctrl.Result{Requeue: true}, nil
-		} else {
-			if machine.InstanceId != "" {
-				jujuMachine.Spec.ProviderID = &machine.InstanceId
-				if err := r.Update(ctx, jujuMachine); err != nil {
-					return ctrl.Result{}, err
-				}
-				log.Info("successfully updated JujuMachine", "Spec.ProviderID", jujuMachine.Spec.ProviderID)
-			} else {
-				log.Info("machine instance ID was empty, requeueing")
-				return ctrl.Result{Requeue: true}, nil
-			}
-		}
 
+	getMachineInput := juju.GetMachineInput{
+		ModelUUID: modelUUID,
+		MachineID: *jujuMachine.Spec.MachineID,
+	}
+	m, err := client.Machines.GetMachine(ctx, getMachineInput)
+	if err != nil {
+		log.Error(err, fmt.Sprintf("failed to retrieve machine with machine ID %s", *jujuMachine.Spec.MachineID))
+		return ctrl.Result{}, err
+	}
+	if m.Status != "started" {
+		log.Info("waiting for machine to start, requeueing")
+		return ctrl.Result{Requeue: true}, nil
 	}
 
 	if machine.Spec.Bootstrap.DataSecretName == nil {
@@ -252,8 +270,7 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, nil
 	}
 
-	machineID := *jujuMachine.Spec.MachineID
-	appsReady, err := r.reconcileApplications(ctx, machine, client, modelUUID, machineID)
+	appsReady, err := r.reconcileApplications(ctx, machine, client, modelUUID, *jujuMachine.Spec.MachineID)
 	if err != nil {
 		log.Error(err, "failed to add units to the machine")
 		return ctrl.Result{}, err
@@ -264,12 +281,92 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{Requeue: true}, nil
 	}
 
+	if jujuMachine.Spec.ProviderID == nil {
+		if m.InstanceId != "" {
+			kubeclient, err := r.kubeClientForCluster(ctx, cluster)
+			if err != nil {
+				if apierrors.IsNotFound(err) {
+					log.Info("kubeconfig secret not found yet, requeueing")
+					return ctrl.Result{Requeue: true}, nil
+				} else {
+					log.Error(err, "failed to create kubernetes client")
+					return ctrl.Result{}, err
+				}
+			}
+
+			defer kubeclient.Close()
+
+			ipInput := juju.GetMachineAddressesInput{
+				ModelUUID: modelUUID,
+				MachineID: *jujuMachine.Spec.MachineID,
+			}
+			ipAddresses, err := client.Machines.GetMachineIPs(ctx, ipInput)
+			if err != nil {
+				log.Error(err, "error getting machine IPs")
+				return ctrl.Result{}, err
+			}
+
+			if len(ipAddresses) < 1 {
+				return ctrl.Result{}, errors.New("machine IP addresses were empty")
+			}
+
+			node, err := getNodeWithAddresses(ctx, ipAddresses, kubeclient)
+			if err != nil {
+				log.Error(err, "error getting node")
+				return ctrl.Result{}, err
+			}
+
+			if node == nil {
+				log.Info("did not match node with addresses, requeueing", "addresses", ipAddresses)
+				return ctrl.Result{Requeue: true}, nil
+			}
+
+			// 2 possible cases
+			// Either we arent expecting a cloud provider to set the provider ID, so we will create our own juju provider ID
+			// based on juju instance ID
+			// or we are expecting a cloud provider to set the provider ID, and have to retrieve it
+			// Either way the node provider ID and machine provider ID will need to match
+			if jujuMachine.Spec.UseJujuProviderID {
+				providerID := fmt.Sprintf("juju://%s", m.InstanceId)
+				jujuMachine.Spec.ProviderID = &providerID
+				log.Info("updated JujuMachine providerID", "Spec.ProviderID", jujuMachine.Spec.ProviderID)
+				// update the nodes provider ID to match
+				node.Spec.ProviderID = *jujuMachine.Spec.ProviderID
+				updatedNode, err := kubeclient.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
+				if err != nil {
+					log.Error(err, "failed to update node")
+					return ctrl.Result{}, err
+				}
+				log.Info("updated node provider ID", "node", updatedNode.Name, "providerId", updatedNode.Spec.ProviderID)
+			} else {
+				log.Info("UseJujuProviderID is false, will get providerID from corresponding node")
+
+				if node.Spec.ProviderID == "" {
+					log.Info("provider ID was empty, requeuing until cloud provider sets it")
+					return ctrl.Result{Requeue: true}, nil
+				} else {
+					jujuMachine.Spec.ProviderID = &node.Spec.ProviderID
+					log.Info("updated JujuMachine providerID", "Spec.ProviderID", jujuMachine.Spec.ProviderID)
+				}
+			}
+		} else {
+			log.Info("machine instance ID was empty, requeueing")
+			return ctrl.Result{Requeue: true}, nil
+		}
+	}
+
+	// machine is ready at this point
 	jujuMachine.Status.Ready = true
-	err = r.Status().Update(ctx, jujuMachine)
+
+	// update IPs
+	machineAddresses, err := buildMachineAddresses(ctx, modelUUID, *jujuMachine.Spec.MachineID, client)
 	if err != nil {
-		log.Error(err, "failed to update JujuMachine status")
+		log.Error(err, "error building machine addresses")
 		return ctrl.Result{}, err
 	}
+
+	log.Info("Updating machine addresses", "addresses", machineAddresses)
+	jujuMachine.Status.Addresses = machineAddresses
 
 	log.Info("stopping reconciliation")
 	return ctrl.Result{}, nil
@@ -278,6 +375,12 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 // SetupWithManager sets up the controller with the Manager.
 func (r *JujuMachineReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
+		WithOptions(controller.Options{
+			RateLimiter: workqueue.NewMaxOfRateLimiter(
+				workqueue.NewItemExponentialFailureRateLimiter(5*time.Millisecond, 5*time.Minute),
+				&workqueue.BucketRateLimiter{Limiter: rate.NewLimiter(rate.Limit(10), 100)},
+			),
+		}).
 		For(&infrastructurev1beta1.JujuMachine{}).
 		Complete(r)
 }
@@ -406,4 +509,90 @@ func destroyMachine(ctx context.Context, machineID string, modelUUID string, cli
 		ModelUUID: modelUUID,
 	}
 	return client.Machines.DestroyMachine(ctx, input)
+}
+
+// kubeClientForCluster will fetch a kubeconfig secret based on cluster name/namespace,
+// use it to create a clientset, and return a kubernetes client.
+func (r *JujuMachineReconciler) kubeClientForCluster(ctx context.Context, cluster *clusterv1.Cluster) (*kubernetesClient, error) {
+	log := log.FromContext(ctx)
+
+	kubeConfigSecret := &corev1.Secret{}
+	objectKey := client.ObjectKey{
+		Namespace: cluster.Namespace,
+		Name:      cluster.Name + "-kubeconfig",
+	}
+
+	err := r.Get(ctx, objectKey, kubeConfigSecret)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			log.Info("kubeconfig secret not found")
+			return nil, err
+		} else {
+			log.Error(err, "error getting kubeconfig secret")
+			return nil, err
+		}
+	}
+
+	config, err := clientcmd.RESTConfigFromKubeConfig(kubeConfigSecret.Data["value"])
+	if err != nil {
+		log.Error(err, "error creating rest config")
+		return nil, err
+	}
+
+	dialer := newDialer()
+	config.Dial = dialer.DialContext
+
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return nil, err
+	}
+
+	return &kubernetesClient{
+		Clientset: clientset,
+		dialer:    dialer,
+	}, nil
+}
+
+func getNodeWithAddresses(ctx context.Context, addresses []string, kubeclient *kubernetesClient) (*corev1.Node, error) {
+	log := log.FromContext(ctx)
+	nodes, err := kubeclient.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		log.Error(err, "error listing nodes")
+		return nil, err
+	}
+
+	for _, node := range nodes.Items {
+		for _, nodeAddress := range node.Status.Addresses {
+			for _, machineAddress := range addresses {
+				if nodeAddress.Address == machineAddress {
+					return &node, nil
+				}
+			}
+		}
+	}
+	return nil, nil
+}
+
+func buildMachineAddresses(ctx context.Context, modelUUID string, machineID string, client *juju.Client) ([]clusterv1.MachineAddress, error) {
+	ipInput := juju.GetMachineAddressesInput{
+		ModelUUID: modelUUID,
+		MachineID: machineID,
+	}
+	ipAddresses, err := client.Machines.GetMachineIPs(ctx, ipInput)
+	if err != nil {
+		return nil, err
+	}
+	if len(ipAddresses) > 0 {
+		machineAddresses := []clusterv1.MachineAddress{}
+		for _, ipAddress := range ipAddresses {
+			machineAddress := clusterv1.MachineAddress{
+				Type:    clusterv1.MachineInternalIP,
+				Address: ipAddress,
+			}
+			machineAddresses = append(machineAddresses, machineAddress)
+		}
+		return machineAddresses, nil
+	} else {
+		return nil, errors.New("machine IP addresses were empty")
+	}
 }

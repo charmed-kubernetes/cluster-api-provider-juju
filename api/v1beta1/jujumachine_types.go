@@ -18,6 +18,7 @@ package v1beta1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 )
 
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
@@ -35,6 +36,11 @@ type JujuMachineSpec struct {
 	// Constraints for the machine specified as a comma-separated string of key-value pairs
 	// Example: "cores=2,mem=8G,root-disk=16G"
 	Constraints string `json:"constraints,omitempty"`
+
+	// If true, the machine will use a providerID based on the juju instance ID
+	// If false, the machine will use the providerID from its corresponding node
+	// Note that if false you will need a cloud provider deployed in order for the provider ID to be set
+	UseJujuProviderID bool `json:"useJujuProviderID"`
 
 	// Machine holds a pointer the ID of the machine that is returned when a machine gets created by the Juju API
 	// This is generally a number like 0, 1, 2 etc
@@ -59,6 +65,9 @@ type JujuMachineStatus struct {
 	// Optional fields for infra providers
 	FailureReason  string `json:"failureReason,omitempty"`  // error string for programs
 	FailureMessage string `json:"failureMessage,omitempty"` // error string for humans
+
+	// Addresses contains the Juju machine associated addresses.
+	Addresses []clusterv1.MachineAddress `json:"addresses,omitempty"`
 }
 
 //+kubebuilder:object:root=true
