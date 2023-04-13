@@ -83,6 +83,12 @@ type AddUnitsInput struct {
 	Placement       []*instance.Placement
 }
 
+type DestroyUnitsInput struct {
+	Units     []string
+	ModelUUID string
+	Force     bool
+}
+
 // ConfigEntry is an auxiliar struct to
 // keep information about juju config entries.
 // Specially, we want to know if they have the
@@ -476,10 +482,14 @@ func (c applicationsClient) DestroyApplication(ctx context.Context, input *Destr
 		Force:          input.Force,
 	}
 
-	_, err = applicationAPIClient.DestroyApplications(destroyParams)
-
+	results, err := applicationAPIClient.DestroyApplications(destroyParams)
 	if err != nil {
 		return err
+	}
+	for _, result := range results {
+		if result.Error != nil {
+			return result.Error
+		}
 	}
 
 	return nil
@@ -535,6 +545,25 @@ func (c applicationsClient) AreApplicationUnitsActiveIdle(ctx context.Context, i
 	return true, nil
 }
 
+func (c applicationsClient) AreApplicationUnitsInError(ctx context.Context, input ReadApplicationInput) (bool, error) {
+	readAppResponse, err := c.ReadApplication(ctx, &input)
+	if err != nil {
+		return false, err
+	}
+
+	if len(readAppResponse.Status.Units) < 1 {
+		return false, nil
+	}
+
+	for _, unit := range readAppResponse.Status.Units {
+		if unit.WorkloadStatus.Status == "error" || unit.AgentStatus.Status != "error" {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
 func (c applicationsClient) GetLeaderAddress(ctx context.Context, input ReadApplicationInput) (*string, error) {
 	readAppResponse, err := c.ReadApplication(ctx, &input)
 	if err != nil {
@@ -583,4 +612,30 @@ func (c applicationsClient) AddUnits(ctx context.Context, input AddUnitsInput) (
 	}
 
 	return units, nil
+}
+
+func (c applicationsClient) DestroyUnits(ctx context.Context, input DestroyUnitsInput) error {
+	conn, err := c.GetConnection(ctx, &input.ModelUUID)
+	if err != nil {
+		return err
+	}
+	applicationAPIClient := apiapplication.NewClient(conn)
+	defer applicationAPIClient.Close()
+
+	results, err := applicationAPIClient.DestroyUnits(apiapplication.DestroyUnitsParams{
+		Units:          input.Units,
+		DestroyStorage: true,
+		Force:          input.Force,
+	})
+	if err != nil {
+		return err
+	}
+
+	for _, result := range results {
+		if result.Error != nil {
+			return result.Error
+		}
+	}
+
+	return nil
 }

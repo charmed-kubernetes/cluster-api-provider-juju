@@ -28,6 +28,7 @@ func (c *actionsClient) EnqueueOperation(ctx context.Context, input EnqueueOpera
 		return action.EnqueuedActions{}, err
 	}
 	client := action.NewClient(conn)
+	defer client.Close()
 
 	act := action.Action{
 		Receiver:   input.Receiver,
@@ -44,6 +45,7 @@ func (c *actionsClient) GetOperation(ctx context.Context, operationID string, mo
 		return action.Operation{}, err
 	}
 	client := action.NewClient(conn)
+	defer client.Close()
 
 	return client.Operation(operationID)
 }

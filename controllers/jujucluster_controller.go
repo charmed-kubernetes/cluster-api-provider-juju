@@ -223,7 +223,8 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 									return ctrl.Result{}, err
 								}
 								destroyedApps := []string{}
-								for appName := range appStatuses {
+								existingApps := []string{}
+								for appName, appStatus := range appStatuses {
 									appExistsInput := juju.ApplicationExistsInput{
 										ModelUUID:       modelUUID,
 										ApplicationName: appName,
@@ -234,20 +235,44 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 										return ctrl.Result{}, err
 									}
 									if appExists {
-										log.Info(fmt.Sprintf("destroying %s", appName))
-										destroyAppInput := juju.DestroyApplicationInput{
-											ApplicationName: appName,
-											ModelUUID:       modelUUID,
+										existingApps = append(existingApps, appName)
+										log.Info(fmt.Sprintf("%s appStatus.Life: %s", appName, appStatus.Life))
+										if appStatus.Life != "dying" {
+											log.Info(fmt.Sprintf("destroying %s since its currently not dying", appName))
+											log.Info("checking if any application units are in error state")
+											readInput := juju.ReadApplicationInput{
+												ModelUUID:       modelUUID,
+												ApplicationName: appName,
+											}
+											inError, err := jujuClient.Applications.AreApplicationUnitsInError(ctx, readInput)
+											if err != nil {
+												log.Error(err, fmt.Sprintf("failed to check if application %s was in err", appName))
+												return ctrl.Result{}, err
+											}
+											if inError {
+												log.Info(fmt.Sprintf("application %s was in error state, will be using forced removal", appName))
+											}
+											destroyAppInput := juju.DestroyApplicationInput{
+												ApplicationName: appName,
+												ModelUUID:       modelUUID,
+												Force:           inError,
+											}
+											if err := jujuClient.Applications.DestroyApplication(ctx, &destroyAppInput); err != nil {
+												log.Error(err, fmt.Sprintf("failed to destroy %s", appName))
+												return ctrl.Result{}, err
+											}
+											destroyedApps = append(destroyedApps, appName)
 										}
-										if err := jujuClient.Applications.DestroyApplication(ctx, &destroyAppInput); err != nil {
-											log.Error(err, fmt.Sprintf("failed to destroy %s", appName))
-											return ctrl.Result{}, err
-										}
-										destroyedApps = append(destroyedApps, appName)
 									}
 								}
 								if len(destroyedApps) > 0 {
-									log.Info("requeueing after destroying applications", "applications", destroyedApps)
+									log.Info("destroyed the following applications", "applications", destroyedApps)
+								} else {
+									log.Info("all applications are currently in the process of being destroyed.")
+								}
+
+								if len(existingApps) > 0 {
+									log.Info("applications still in existence, requeueing", "applications", existingApps)
 									return ctrl.Result{RequeueAfter: requeueTime}, nil
 								}
 
@@ -472,6 +497,9 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			return ctrl.Result{}, errors.Wrapf(err, "couldn't patch cluster %q", jujuCluster.Name)
 		}
 	}
+	// TODO: update status with juju status
+	// TODO: update config/constraints for default apps
+	// TODO: add second finalizer to handle the non-juju dependent cleanup (so k8s resources that dont need any juju client interaction)
 
 	log.Info("stopping reconciliation")
 	return ctrl.Result{}, nil
