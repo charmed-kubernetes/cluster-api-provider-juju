@@ -41,6 +41,28 @@ spec:
         endpoint: 10.246.152.100
     authTypes:
       - "userpass"
+defaultApplicationConfigs:
+  kubernetesControlPlaneConfig:
+    options:
+      ignore-missing-cni: true
+      enable-metrics: false
+      enable-dashboard-addons: false
+      allow-privileged: true
+      ignore-kube-system-pods: "coredns vsphere-cloud-controller-manager"
+  kubernetesWorkerConfig:
+    options:
+      ignore-missing-cni: true
+      ingress: false
+  easyRSAConfig:
+    constraints:
+      cores: 1
+      mem: 4000
+      root-disk: 16000
+  kubeApiLoadBalancerConfig:
+    constraints:
+      cores: 1
+      mem: 4000
+      root-disk: 16000
 additionalApplications:
     applications:
       vsphere-integrator:

@@ -35,6 +35,7 @@ import (
 	kbatch "k8s.io/api/batch/v1"
 	kcore "k8s.io/api/core/v1"
 	krbac "k8s.io/api/rbac/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -498,7 +499,6 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 	}
 	// TODO: update status with juju status
-	// TODO: update config/constraints for default apps
 	// TODO: add second finalizer to handle the non-juju dependent cleanup (so k8s resources that dont need any juju client interaction)
 
 	log.Info("stopping reconciliation")
@@ -973,16 +973,35 @@ func createIntegrationsIfNeeded(ctx context.Context, jujuCluster *infrastructure
 func createApplicationsIfNeeded(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster, client *juju.Client, modelUUID string) (bool, error) {
 	log := log.FromContext(ctx)
 	created := false
-	easyRSACons, err := constraints.Parse("cores=1", "mem=4G", "root-disk=16G")
+
+	easyRSAConfig, easyRSACons, err := getOptionsAndConstraints(jujuCluster.Spec.DefaultApplicationConfigs.EasyRSAConfig)
 	if err != nil {
-		log.Error(err, "error creating machine constraints")
 		return false, err
 	}
 
-	lbCons, err := constraints.Parse("cores=1", "mem=4G", "root-disk=16G")
+	lbConfig, lbCons, err := getOptionsAndConstraints(jujuCluster.Spec.DefaultApplicationConfigs.KubeAPILoadBalancerConfig)
 	if err != nil {
-		log.Error(err, "error creating machine constraints")
-		return created, err
+		return false, err
+	}
+
+	kcpConfig, kcpCons, err := getOptionsAndConstraints(jujuCluster.Spec.DefaultApplicationConfigs.KubernetesControlPlaneConfig)
+	if err != nil {
+		return false, err
+	}
+
+	kwConfig, kwCons, err := getOptionsAndConstraints(jujuCluster.Spec.DefaultApplicationConfigs.KubernetesWorkerConfig)
+	if err != nil {
+		return false, err
+	}
+
+	etcdConfig, etcdCons, err := getOptionsAndConstraints(jujuCluster.Spec.DefaultApplicationConfigs.EtcdConfig)
+	if err != nil {
+		return false, err
+	}
+
+	containerdConfig, containerdCons, err := getOptionsAndConstraints(jujuCluster.Spec.DefaultApplicationConfigs.ContainerdConfig)
+	if err != nil {
+		return false, err
 	}
 
 	createInputs := []juju.CreateApplicationInput{
@@ -994,6 +1013,7 @@ func createApplicationsIfNeeded(ctx context.Context, jujuCluster *infrastructure
 			CharmBase:       "ubuntu@22.04",
 			Units:           1,
 			Constraints:     easyRSACons,
+			Config:          easyRSAConfig,
 		},
 		{
 			ApplicationName: "kubeapi-load-balancer",
@@ -1003,6 +1023,7 @@ func createApplicationsIfNeeded(ctx context.Context, jujuCluster *infrastructure
 			CharmBase:       "ubuntu@22.04",
 			Units:           1,
 			Constraints:     lbCons,
+			Config:          lbConfig,
 		},
 		{
 			ApplicationName: "kubernetes-control-plane",
@@ -1011,13 +1032,8 @@ func createApplicationsIfNeeded(ctx context.Context, jujuCluster *infrastructure
 			CharmChannel:    "1.27/edge",
 			CharmBase:       "ubuntu@22.04",
 			Units:           0,
-			Config: map[string]interface{}{
-				"ignore-missing-cni":      true,
-				"enable-metrics":          false,
-				"enable-dashboard-addons": false,
-				"allow-privileged":        true,
-				"ignore-kube-system-pods": "coredns vsphere-cloud-controller-manager",
-			},
+			Config:          kcpConfig,
+			Constraints:     kcpCons,
 		},
 		{
 			ApplicationName: "kubernetes-worker",
@@ -1026,10 +1042,8 @@ func createApplicationsIfNeeded(ctx context.Context, jujuCluster *infrastructure
 			CharmChannel:    "1.27/edge",
 			CharmBase:       "ubuntu@22.04",
 			Units:           0,
-			Config: map[string]interface{}{
-				"ignore-missing-cni": true,
-				"ingress":            false,
-			},
+			Config:          kwConfig,
+			Constraints:     kwCons,
 		},
 		{
 			ApplicationName: "etcd",
@@ -1038,6 +1052,8 @@ func createApplicationsIfNeeded(ctx context.Context, jujuCluster *infrastructure
 			CharmChannel:    "1.27/edge",
 			CharmBase:       "ubuntu@22.04",
 			Units:           0,
+			Config:          etcdConfig,
+			Constraints:     etcdCons,
 		},
 		{
 			ApplicationName: "containerd",
@@ -1046,6 +1062,8 @@ func createApplicationsIfNeeded(ctx context.Context, jujuCluster *infrastructure
 			CharmChannel:    "1.27/edge",
 			CharmBase:       "ubuntu@22.04",
 			Units:           0,
+			Config:          containerdConfig,
+			Constraints:     containerdCons,
 		},
 	}
 
@@ -1053,15 +1071,9 @@ func createApplicationsIfNeeded(ctx context.Context, jujuCluster *infrastructure
 	for applicationName, charm := range jujuCluster.Spec.AdditionalApplications.Applications {
 		config := make(map[string]interface{})
 		if charm.Options != nil {
-			configJson, err := json.Marshal(charm.Options)
+			var err error
+			config, err = jsonToConfig(*charm.Options)
 			if err != nil {
-				log.Error(err, "error marshalling charm config")
-				return false, err
-			}
-
-			err = json.Unmarshal(configJson, &config)
-			if err != nil {
-				log.Error(err, "error unmarshalling charm config")
 				return false, err
 			}
 		}
@@ -1082,7 +1094,6 @@ func createApplicationsIfNeeded(ctx context.Context, jujuCluster *infrastructure
 			Config:          config,
 			Constraints:     cons,
 		})
-
 	}
 
 	for _, createInput := range createInputs {
@@ -1143,4 +1154,41 @@ func (r *JujuClusterReconciler) createRegistrationSecretIfNeeded(ctx context.Con
 	}
 
 	return nil
+}
+
+func jsonToConfig(jsonObject apiextensionsv1.JSON) (map[string]interface{}, error) {
+	config := make(map[string]interface{})
+
+	configJson, err := json.Marshal(jsonObject)
+	if err != nil {
+		return nil, err
+	}
+
+	err = json.Unmarshal(configJson, &config)
+	if err != nil {
+		return nil, err
+	}
+
+	return config, nil
+}
+
+func getOptionsAndConstraints(config *infrastructurev1beta1.DefaultApplicationConfig) (map[string]interface{}, constraints.Value, error) {
+
+	options := make(map[string]interface{})
+	cons := constraints.Value{}
+	if config != nil {
+		if config.Constraints != nil {
+			cons = constraints.Value(*config.Constraints)
+		}
+
+		if config.Options != nil {
+			var err error
+			options, err = jsonToConfig(*config.Options)
+			if err != nil {
+				return nil, constraints.Value{}, err
+			}
+		}
+	}
+
+	return options, cons, nil
 }

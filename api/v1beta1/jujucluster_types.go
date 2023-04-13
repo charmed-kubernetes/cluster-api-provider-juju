@@ -181,6 +181,20 @@ type Charm struct {
 	RequiresTrust bool                  `json:"requiresTrust,omitempty"`
 }
 
+type DefaultApplicationConfig struct {
+	Options     *apiextensionsv1.JSON `json:"options,omitempty"`
+	Constraints *ConstraintValue      `json:"constraints,omitempty"`
+}
+
+type DefaultApplicationConfigs struct {
+	EasyRSAConfig                *DefaultApplicationConfig `json:"easyRSAConfig,omitempty"`
+	EtcdConfig                   *DefaultApplicationConfig `json:"etcdConfig,omitempty"`
+	KubernetesWorkerConfig       *DefaultApplicationConfig `json:"kubernetesWorkerConfig,omitempty"`
+	KubernetesControlPlaneConfig *DefaultApplicationConfig `json:"kubernetesControlPlaneConfig,omitempty"`
+	KubeAPILoadBalancerConfig    *DefaultApplicationConfig `json:"kubeApiLoadBalancerConfig,omitempty"`
+	ContainerdConfig             *DefaultApplicationConfig `json:"containerdConfig,omitempty"`
+}
+
 type AdditionalApplications struct {
 	Applications map[string]Charm `json:"applications"`
 	Integrations []Endpoints      `json:"integrations"`
@@ -209,6 +223,8 @@ type JujuClusterSpec struct {
 	// Credential is used to specify the name and namespace of the secret containing cloud credentials if your cloud requires them
 	// +optional
 	Credential *Credential `json:"credential,omitempty"`
+
+	DefaultApplicationConfigs *DefaultApplicationConfigs `json:"defaultApplicationConfigs,omitempty"`
 
 	// List of additional applications to deploy in the model
 	AdditionalApplications AdditionalApplications `json:"additionalApplications,omitempty"`
