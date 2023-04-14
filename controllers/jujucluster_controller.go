@@ -48,7 +48,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 )
 
 const requeueTime = 10 * time.Second
@@ -93,7 +95,7 @@ type JujuClusterReconciler struct {
 //
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.13.0/pkg/reconcile
-func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res ctrl.Result, reterr error) {
 	log := log.FromContext(ctx)
 
 	jujuCluster := &infrastructurev1beta1.JujuCluster{}
@@ -109,7 +111,7 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			log.Info("waiting for cluster owner to be found")
-			return ctrl.Result{}, nil
+			return ctrl.Result{Requeue: true}, nil
 		}
 		log.Error(err, "failed to get owner Cluster")
 		return ctrl.Result{}, err
@@ -117,7 +119,14 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	if cluster == nil {
 		log.Info("waiting for cluster owner to be non-nil")
-		return ctrl.Result{}, nil
+		return ctrl.Result{Requeue: true}, nil
+	}
+
+	// Initialize the patch helper.
+	patchHelper, err := patch.NewHelper(jujuCluster, r.Client)
+	if err != nil {
+		log.Error(err, "failed to configure the patch helper")
+		return ctrl.Result{Requeue: true}, nil
 	}
 
 	var credentialSecret *kcore.Secret = nil
@@ -418,6 +427,32 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
+	defer func() {
+		log.Info("attempting to patch status")
+
+		// Always attempt to update the model status on each reconcile once the model becomes available
+		modelStatus, err := jujuClient.Models.GetModelStatus(ctx, modelUUID)
+		if err != nil {
+			log.Error(err, "failed to get model status")
+		}
+
+		marshalledStatus, err := json.Marshal(modelStatus)
+		if err != nil {
+			log.Error(err, "failed to marshal model status")
+		}
+		jujuCluster.Status.ModelStatus = &apiextensionsv1.JSON{
+			Raw: marshalledStatus,
+		}
+
+		// Always attempt to Patch the CharmedK8sControlPlane object and status after each reconciliation.
+		if err := patchHelper.Patch(ctx, jujuCluster, patch.WithStatusObservedGeneration{}); err != nil {
+			log.Error(err, "failed to patch JujuCluster")
+		}
+
+		res = ctrl.Result{RequeueAfter: 30 * time.Second}
+		log.Info("successfully patched juju cluster status")
+	}()
+
 	createdApplications, err := createApplicationsIfNeeded(ctx, jujuCluster, jujuClient, modelUUID)
 	if err != nil {
 		log.Error(err, "error creating applications")
@@ -488,17 +523,10 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	if !jujuCluster.Status.Ready {
-		helper, err := patch.NewHelper(jujuCluster, r.Client)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		log.Info("patching cluster ready status to true")
+		log.Info("setting cluster ready status to true")
 		jujuCluster.Status.Ready = true
-		if err := helper.Patch(ctx, jujuCluster); err != nil {
-			return ctrl.Result{}, errors.Wrapf(err, "couldn't patch cluster %q", jujuCluster.Name)
-		}
 	}
-	// TODO: update status with juju status
+
 	// TODO: add second finalizer to handle the non-juju dependent cleanup (so k8s resources that dont need any juju client interaction)
 
 	log.Info("stopping reconciliation")
@@ -513,6 +541,18 @@ func (r *JujuClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				workqueue.NewItemExponentialFailureRateLimiter(5*time.Millisecond, 5*time.Minute),
 				&workqueue.BucketRateLimiter{Limiter: rate.NewLimiter(rate.Limit(10), 100)},
 			),
+		}).
+		WithEventFilter(predicate.Funcs{
+			UpdateFunc: func(e event.UpdateEvent) bool {
+				oldGeneration := e.ObjectOld.GetGeneration()
+				newGeneration := e.ObjectNew.GetGeneration()
+				// Generation is only updated on spec changes (also on deletion),
+				// not metadata or status
+				// Filter out events where the generation hasn't changed to
+				// avoid being triggered by status updates
+				// This means we wont constantly be updating status
+				return oldGeneration != newGeneration
+			},
 		}).
 		For(&infrastructurev1beta1.JujuCluster{}).
 		Owns(&kcore.Secret{}).

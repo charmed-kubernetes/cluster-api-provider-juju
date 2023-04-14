@@ -1013,6 +1013,8 @@ spec:
           status:
             description: JujuClusterStatus defines the observed state of JujuCluster
             properties:
+              modelStatus:
+                x-kubernetes-preserve-unknown-fields: true
               ready:
                 default: false
                 description: Required fields for infra providers Ready denotes that

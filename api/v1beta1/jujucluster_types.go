@@ -245,6 +245,8 @@ type JujuClusterStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
+	ModelStatus *apiextensionsv1.JSON `json:"modelStatus,omitempty"`
+
 	// Required fields for infra providers
 	// Ready denotes that the cluster (infrastructure) is ready.
 	//+kubebuilder:default=false
