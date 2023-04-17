@@ -33,9 +33,8 @@ type JujuMachineSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
-	// Constraints for the machine specified as a comma-separated string of key-value pairs
-	// Example: "cores=2,mem=8G,root-disk=16G"
-	Constraints string `json:"constraints,omitempty"`
+	// Constraints for the machine
+	Constraints *ConstraintValue `json:"constraints,omitempty"`
 
 	// If true, the machine will use a providerID based on the juju instance ID
 	// If false, the machine will use the providerID from its corresponding node

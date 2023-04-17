@@ -179,11 +179,16 @@ type Charm struct {
 	Options       *apiextensionsv1.JSON `json:"options,omitempty"`
 	Constraints   *ConstraintValue      `json:"constraints,omitempty"`
 	RequiresTrust bool                  `json:"requiresTrust,omitempty"`
+	Expose        bool                  `json:"expose,omitempty"`
 }
 
 type DefaultApplicationConfig struct {
 	Options     *apiextensionsv1.JSON `json:"options,omitempty"`
 	Constraints *ConstraintValue      `json:"constraints,omitempty"`
+	// Channel and base can be empty, the default channel and base will cover them if not specified
+	Channel string `json:"channel,omitempty"`
+	Base    string `json:"base,omitempty"`
+	Expose  bool   `json:"expose,omitempty"`
 }
 
 type DefaultApplicationConfigs struct {
@@ -193,6 +198,8 @@ type DefaultApplicationConfigs struct {
 	KubernetesControlPlaneConfig *DefaultApplicationConfig `json:"kubernetesControlPlaneConfig,omitempty"`
 	KubeAPILoadBalancerConfig    *DefaultApplicationConfig `json:"kubeApiLoadBalancerConfig,omitempty"`
 	ContainerdConfig             *DefaultApplicationConfig `json:"containerdConfig,omitempty"`
+	DefaultChannel               string                    `json:"defaultChannel"`
+	DefaultBase                  string                    `json:"defaultBase"`
 }
 
 type AdditionalApplications struct {

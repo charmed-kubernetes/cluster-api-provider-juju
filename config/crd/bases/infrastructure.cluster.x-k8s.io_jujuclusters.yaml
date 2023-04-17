@@ -143,6 +143,8 @@ spec:
                                 type: string
                               type: array
                           type: object
+                        expose:
+                          type: boolean
                         numUnits:
                           type: integer
                         options:
@@ -311,6 +313,12 @@ spec:
                 properties:
                   containerdConfig:
                     properties:
+                      base:
+                        type: string
+                      channel:
+                        description: Channel and base can be empty, the default channel
+                          and base will cover them if not specified
+                        type: string
                       constraints:
                         description: We are only able to do this since constraints.Value
                           has json-tagged fields
@@ -404,11 +412,23 @@ spec:
                               type: string
                             type: array
                         type: object
+                      expose:
+                        type: boolean
                       options:
                         x-kubernetes-preserve-unknown-fields: true
                     type: object
+                  defaultBase:
+                    type: string
+                  defaultChannel:
+                    type: string
                   easyRSAConfig:
                     properties:
+                      base:
+                        type: string
+                      channel:
+                        description: Channel and base can be empty, the default channel
+                          and base will cover them if not specified
+                        type: string
                       constraints:
                         description: We are only able to do this since constraints.Value
                           has json-tagged fields
@@ -502,11 +522,19 @@ spec:
                               type: string
                             type: array
                         type: object
+                      expose:
+                        type: boolean
                       options:
                         x-kubernetes-preserve-unknown-fields: true
                     type: object
                   etcdConfig:
                     properties:
+                      base:
+                        type: string
+                      channel:
+                        description: Channel and base can be empty, the default channel
+                          and base will cover them if not specified
+                        type: string
                       constraints:
                         description: We are only able to do this since constraints.Value
                           has json-tagged fields
@@ -600,11 +628,19 @@ spec:
                               type: string
                             type: array
                         type: object
+                      expose:
+                        type: boolean
                       options:
                         x-kubernetes-preserve-unknown-fields: true
                     type: object
                   kubeApiLoadBalancerConfig:
                     properties:
+                      base:
+                        type: string
+                      channel:
+                        description: Channel and base can be empty, the default channel
+                          and base will cover them if not specified
+                        type: string
                       constraints:
                         description: We are only able to do this since constraints.Value
                           has json-tagged fields
@@ -698,11 +734,19 @@ spec:
                               type: string
                             type: array
                         type: object
+                      expose:
+                        type: boolean
                       options:
                         x-kubernetes-preserve-unknown-fields: true
                     type: object
                   kubernetesControlPlaneConfig:
                     properties:
+                      base:
+                        type: string
+                      channel:
+                        description: Channel and base can be empty, the default channel
+                          and base will cover them if not specified
+                        type: string
                       constraints:
                         description: We are only able to do this since constraints.Value
                           has json-tagged fields
@@ -796,11 +840,19 @@ spec:
                               type: string
                             type: array
                         type: object
+                      expose:
+                        type: boolean
                       options:
                         x-kubernetes-preserve-unknown-fields: true
                     type: object
                   kubernetesWorkerConfig:
                     properties:
+                      base:
+                        type: string
+                      channel:
+                        description: Channel and base can be empty, the default channel
+                          and base will cover them if not specified
+                        type: string
                       constraints:
                         description: We are only able to do this since constraints.Value
                           has json-tagged fields
@@ -894,9 +946,14 @@ spec:
                               type: string
                             type: array
                         type: object
+                      expose:
+                        type: boolean
                       options:
                         x-kubernetes-preserve-unknown-fields: true
                     type: object
+                required:
+                - defaultBase
+                - defaultChannel
                 type: object
               failureMessage:
                 type: string

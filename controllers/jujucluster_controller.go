@@ -165,7 +165,7 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	// Get config data from secret
-	jujuConfig, err := getJujuConfigFromSecret(ctx, jujuCluster, r.Client)
+	jujuConfig, err := getJujuConfigFromSecret(ctx, cluster, jujuCluster, r.Client)
 	if err != nil {
 		log.Error(err, "failed to retrieve juju configuration data from secret")
 		return ctrl.Result{}, err
@@ -527,8 +527,6 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		jujuCluster.Status.Ready = true
 	}
 
-	// TODO: add second finalizer to handle the non-juju dependent cleanup (so k8s resources that dont need any juju client interaction)
-
 	log.Info("stopping reconciliation")
 	return ctrl.Result{}, nil
 }
@@ -596,7 +594,7 @@ func (r *JujuClusterReconciler) createJujuControllerResources(ctx context.Contex
 		"./juju add-user %s > NUL;"+
 		"./juju grant capi-juju superuser;"+
 		"./juju show-controller --show-password > controller_data.txt;"+
-		"./kubectl create secret generic %s --from-file=controller-data=./controller_data.txt -n %s", cloudName, cloudName, jujuCluster.Spec.ControllerServiceType, jujuAccountName, controllerDataSecretName, jujuCluster.Namespace)
+		"./kubectl create secret generic %s --from-file=controller-data=./controller_data.txt -n %s", cloudName, cloudName, jujuCluster.Spec.ControllerServiceType, jujuAccountName, cluster.Name+"-"+controllerDataSecretName, jujuCluster.Namespace)
 	job := &kbatch.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Labels:      make(map[string]string),
@@ -668,7 +666,7 @@ func (r *JujuClusterReconciler) deleteJujuControllerResources(ctx context.Contex
 	configSecret := &kcore.Secret{}
 	configSecretKey := client.ObjectKey{
 		Namespace: jujuCluster.Namespace,
-		Name:      controllerDataSecretName,
+		Name:      cluster.Name + "-" + controllerDataSecretName,
 	}
 
 	job := &kbatch.Job{}
@@ -726,13 +724,13 @@ func (r *JujuClusterReconciler) deleteJujuControllerResources(ctx context.Contex
 	return nil
 }
 
-func getJujuConfigFromSecret(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster, c client.Client) (*JujuConfig, error) {
+func getJujuConfigFromSecret(ctx context.Context, cluster *clusterv1.Cluster, jujuCluster *infrastructurev1beta1.JujuCluster, c client.Client) (*JujuConfig, error) {
 	log := log.FromContext(ctx)
 
 	configSecret := &kcore.Secret{}
 	objectKey := client.ObjectKey{
 		Namespace: jujuCluster.Namespace,
-		Name:      controllerDataSecretName,
+		Name:      cluster.Name + "-" + controllerDataSecretName,
 	}
 	if err := c.Get(ctx, objectKey, configSecret); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -1049,8 +1047,9 @@ func createApplicationsIfNeeded(ctx context.Context, jujuCluster *infrastructure
 			ApplicationName: "easyrsa",
 			ModelUUID:       modelUUID,
 			CharmName:       "easyrsa",
-			CharmChannel:    "1.27/edge",
-			CharmBase:       "ubuntu@22.04",
+			CharmChannel:    getChannelForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.EasyRSAConfig, jujuCluster),
+			CharmBase:       getBaseForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.EasyRSAConfig, jujuCluster),
+			Expose:          getExposeForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.EasyRSAConfig, jujuCluster),
 			Units:           1,
 			Constraints:     easyRSACons,
 			Config:          easyRSAConfig,
@@ -1059,8 +1058,9 @@ func createApplicationsIfNeeded(ctx context.Context, jujuCluster *infrastructure
 			ApplicationName: "kubeapi-load-balancer",
 			ModelUUID:       modelUUID,
 			CharmName:       "kubeapi-load-balancer",
-			CharmChannel:    "1.27/edge",
-			CharmBase:       "ubuntu@22.04",
+			CharmChannel:    getChannelForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.KubeAPILoadBalancerConfig, jujuCluster),
+			CharmBase:       getBaseForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.KubeAPILoadBalancerConfig, jujuCluster),
+			Expose:          getExposeForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.KubeAPILoadBalancerConfig, jujuCluster),
 			Units:           1,
 			Constraints:     lbCons,
 			Config:          lbConfig,
@@ -1069,8 +1069,9 @@ func createApplicationsIfNeeded(ctx context.Context, jujuCluster *infrastructure
 			ApplicationName: "kubernetes-control-plane",
 			ModelUUID:       modelUUID,
 			CharmName:       "kubernetes-control-plane",
-			CharmChannel:    "1.27/edge",
-			CharmBase:       "ubuntu@22.04",
+			CharmChannel:    getChannelForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.KubernetesControlPlaneConfig, jujuCluster),
+			CharmBase:       getBaseForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.KubernetesControlPlaneConfig, jujuCluster),
+			Expose:          getExposeForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.KubernetesControlPlaneConfig, jujuCluster),
 			Units:           0,
 			Config:          kcpConfig,
 			Constraints:     kcpCons,
@@ -1079,8 +1080,9 @@ func createApplicationsIfNeeded(ctx context.Context, jujuCluster *infrastructure
 			ApplicationName: "kubernetes-worker",
 			ModelUUID:       modelUUID,
 			CharmName:       "kubernetes-worker",
-			CharmChannel:    "1.27/edge",
-			CharmBase:       "ubuntu@22.04",
+			CharmChannel:    getChannelForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.KubernetesWorkerConfig, jujuCluster),
+			CharmBase:       getBaseForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.KubernetesWorkerConfig, jujuCluster),
+			Expose:          getExposeForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.KubernetesWorkerConfig, jujuCluster),
 			Units:           0,
 			Config:          kwConfig,
 			Constraints:     kwCons,
@@ -1089,8 +1091,9 @@ func createApplicationsIfNeeded(ctx context.Context, jujuCluster *infrastructure
 			ApplicationName: "etcd",
 			ModelUUID:       modelUUID,
 			CharmName:       "etcd",
-			CharmChannel:    "1.27/edge",
-			CharmBase:       "ubuntu@22.04",
+			CharmChannel:    getChannelForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.EtcdConfig, jujuCluster),
+			CharmBase:       getBaseForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.EtcdConfig, jujuCluster),
+			Expose:          getExposeForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.EtcdConfig, jujuCluster),
 			Units:           0,
 			Config:          etcdConfig,
 			Constraints:     etcdCons,
@@ -1099,8 +1102,9 @@ func createApplicationsIfNeeded(ctx context.Context, jujuCluster *infrastructure
 			ApplicationName: "containerd",
 			ModelUUID:       modelUUID,
 			CharmName:       "containerd",
-			CharmChannel:    "1.27/edge",
-			CharmBase:       "ubuntu@22.04",
+			CharmChannel:    getChannelForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.ContainerdConfig, jujuCluster),
+			CharmBase:       getBaseForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.ContainerdConfig, jujuCluster),
+			Expose:          getExposeForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.ContainerdConfig, jujuCluster),
 			Units:           0,
 			Config:          containerdConfig,
 			Constraints:     containerdCons,
@@ -1133,6 +1137,7 @@ func createApplicationsIfNeeded(ctx context.Context, jujuCluster *infrastructure
 			Trust:           charm.RequiresTrust,
 			Config:          config,
 			Constraints:     cons,
+			Expose:          charm.Expose,
 		})
 	}
 
@@ -1231,4 +1236,34 @@ func getOptionsAndConstraints(config *infrastructurev1beta1.DefaultApplicationCo
 	}
 
 	return options, cons, nil
+}
+
+func getChannelForDefaultApp(config *infrastructurev1beta1.DefaultApplicationConfig, jujuCluster *infrastructurev1beta1.JujuCluster) string {
+	if config != nil {
+		if config.Channel != "" {
+			return config.Channel
+		}
+	}
+
+	return jujuCluster.Spec.DefaultApplicationConfigs.DefaultChannel
+}
+
+func getBaseForDefaultApp(config *infrastructurev1beta1.DefaultApplicationConfig, jujuCluster *infrastructurev1beta1.JujuCluster) string {
+	if config != nil {
+		if config.Base != "" {
+			return config.Base
+		}
+	}
+
+	return jujuCluster.Spec.DefaultApplicationConfigs.DefaultBase
+}
+
+func getExposeForDefaultApp(config *infrastructurev1beta1.DefaultApplicationConfig, jujuCluster *infrastructurev1beta1.JujuCluster) bool {
+	if config != nil {
+		if config.Expose {
+			return config.Expose
+		}
+	}
+
+	return false
 }

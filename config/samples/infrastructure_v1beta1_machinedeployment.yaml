@@ -26,7 +26,10 @@ spec:
   template:
     spec:
       useJujuProviderID: false
-      constraints: "cores=2,mem=8G,root-disk=16G"
+      constraints: 
+        cores: 2
+        mem: 8000
+        root-disk: 16000
 ---
 apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
 kind: CharmedK8sConfigTemplate

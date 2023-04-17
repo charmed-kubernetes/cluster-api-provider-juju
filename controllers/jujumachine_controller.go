@@ -160,7 +160,7 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	// Get config data from secret
-	jujuConfig, err := getJujuConfigFromSecret(ctx, jujuCluster, r.Client)
+	jujuConfig, err := getJujuConfigFromSecret(ctx, cluster, jujuCluster, r.Client)
 	if err != nil {
 		log.Error(err, "failed to retrieve juju configuration data from secret")
 		return ctrl.Result{}, err
@@ -239,7 +239,7 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	if jujuMachine.Spec.MachineID == nil {
 		log.Info("machineID field in spec was nil, requesting a machine now")
-		result, err := createMachine(ctx, modelUUID, client)
+		result, err := createMachine(ctx, modelUUID, jujuMachine, client)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
@@ -480,13 +480,12 @@ func getUnitStatusForAppOnMachine(ctx context.Context, client *juju.Client, mode
 	return nil, nil
 }
 
-func createMachine(ctx context.Context, modelUUID string, client *juju.Client) (params.AddMachinesResult, error) {
-	log := log.FromContext(ctx)
-	cons, err := constraints.Parse("cores=2", "mem=8G", "root-disk=16G")
-	if err != nil {
-		log.Error(err, "error creating machine constraints")
-		return params.AddMachinesResult{}, nil
+func createMachine(ctx context.Context, modelUUID string, machine *infrastructurev1beta1.JujuMachine, client *juju.Client) (params.AddMachinesResult, error) {
+	cons := constraints.Value{}
+	if machine.Spec.Constraints != nil {
+		cons = constraints.Value(*machine.Spec.Constraints)
 	}
+
 	machineParams := params.AddMachineParams{
 		Jobs:        []model.MachineJob{model.JobHostUnits},
 		Constraints: cons,

@@ -35,7 +35,7 @@ type CreateApplicationInput struct {
 	CharmRevision   *int
 	Units           int
 	Trust           bool
-	Expose          map[string]interface{}
+	Expose          bool
 	Config          map[string]interface{}
 	Constraints     constraints.Value
 }
@@ -285,6 +285,8 @@ func (c applicationsClient) CreateApplication(ctx context.Context, input *Create
 			Base:     origin.Base.String(),
 		}, err
 	}
+
+	err = c.processExpose(ctx, applicationAPIClient, input.ApplicationName, input.Expose)
 
 	return &CreateApplicationResponse{
 		AppName:  appName,
@@ -638,4 +640,15 @@ func (c applicationsClient) DestroyUnits(ctx context.Context, input DestroyUnits
 	}
 
 	return nil
+}
+
+func (c applicationsClient) processExpose(ctx context.Context, applicationAPIClient *apiapplication.Client, applicationName string, expose bool) error {
+	log := log.FromContext(ctx)
+	if !expose {
+		return nil
+	}
+
+	log.Info(fmt.Sprintf("exposing application %s", applicationName))
+	return applicationAPIClient.Expose(applicationName, nil)
+
 }
