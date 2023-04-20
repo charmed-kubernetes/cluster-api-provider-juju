@@ -160,7 +160,7 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	// Get config data from secret
-	jujuConfig, err := getJujuConfigFromSecret(ctx, jujuCluster, r.Client)
+	jujuConfig, err := getJujuConfigFromSecret(ctx, cluster, jujuCluster, r.Client)
 	if err != nil {
 		log.Error(err, "failed to retrieve juju configuration data from secret")
 		return ctrl.Result{}, err
@@ -215,13 +215,12 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				}
 				if machine != nil {
 					log.Info("machine information", "machine", machine)
-					log.Info(fmt.Sprintf("Destroying machine: %s", *machineID))
-					result, err := destroyMachine(ctx, *machineID, modelUUID, client)
+					log.Info(fmt.Sprintf("Destroying machine %s by removing all current units", *machineID))
+					err := destroyMachine(ctx, *machineID, modelUUID, client)
 					if err != nil {
 						log.Error(err, fmt.Sprintf("Error destroying machine %s", *jujuMachine.Spec.MachineID))
 						return ctrl.Result{}, err
 					}
-					log.Info("request to destroy machine succeeded, requeueing", "result", result)
 					return ctrl.Result{Requeue: true}, err
 				}
 				// If we make it here, it means the machine was nil and is no longer in the model
@@ -240,7 +239,7 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	if jujuMachine.Spec.MachineID == nil {
 		log.Info("machineID field in spec was nil, requesting a machine now")
-		result, err := createMachine(ctx, modelUUID, client)
+		result, err := createMachine(ctx, modelUUID, jujuMachine, client)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
@@ -249,6 +248,7 @@ func (r *JujuMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		log.Info(fmt.Sprintf("updating machine spec to machine: %s", result.Machine))
 		machineID := result.Machine
 		jujuMachine.Spec.MachineID = &machineID
+		return ctrl.Result{Requeue: true}, nil
 	}
 
 	getMachineInput := juju.GetMachineInput{
@@ -480,13 +480,12 @@ func getUnitStatusForAppOnMachine(ctx context.Context, client *juju.Client, mode
 	return nil, nil
 }
 
-func createMachine(ctx context.Context, modelUUID string, client *juju.Client) (params.AddMachinesResult, error) {
-	log := log.FromContext(ctx)
-	cons, err := constraints.Parse("cores=2", "mem=8G", "root-disk=16G")
-	if err != nil {
-		log.Error(err, "error creating machine constraints")
-		return params.AddMachinesResult{}, nil
+func createMachine(ctx context.Context, modelUUID string, machine *infrastructurev1beta1.JujuMachine, client *juju.Client) (params.AddMachinesResult, error) {
+	cons := constraints.Value{}
+	if machine.Spec.Constraints != nil {
+		cons = constraints.Value(*machine.Spec.Constraints)
 	}
+
 	machineParams := params.AddMachineParams{
 		Jobs:        []model.MachineJob{model.JobHostUnits},
 		Constraints: cons,
@@ -499,16 +498,58 @@ func createMachine(ctx context.Context, modelUUID string, client *juju.Client) (
 	return client.Machines.AddMachine(ctx, input)
 }
 
-func destroyMachine(ctx context.Context, machineID string, modelUUID string, client *juju.Client) (params.DestroyMachineResult, error) {
-	input := juju.DestroyMachineInput{
-		Force:     true, // FIXME: clean up more cleanly by iterating over units
-		Keep:      false,
-		DryRun:    false,
-		MaxWait:   10 * time.Minute,
-		MachineID: machineID,
-		ModelUUID: modelUUID,
+func destroyMachine(ctx context.Context, machineID string, modelUUID string, client *juju.Client) error {
+	log := log.FromContext(ctx)
+	// Loop over units on the machine and remove them
+	// Removing all units should force the machine to be removed as well
+
+	// Getting units for a specific machine is a bit tricky, must get applications status, and then find the units belonging to the
+	// machine we are looking for within that
+	appStatuses, err := client.Applications.GetApplicationsStatus(ctx, modelUUID)
+	if err != nil {
+		return err
 	}
-	return client.Machines.DestroyMachine(ctx, input)
+
+	units := make(map[string]params.UnitStatus)
+	for _, appStatus := range appStatuses {
+		for unitID, unitStatus := range appStatus.Units {
+			if unitStatus.Machine == machineID {
+				// we only want to remove those that are not currently dying
+				// if they are dying theyve already had a destroy call made
+				// Juju does not seem to update workload status.Life when removing units, it does update agent status though
+				if unitStatus.AgentStatus.Life != "dying" {
+					log.Info(fmt.Sprintf("%s is not yet dying, will be removing this unit", unitID))
+					units[unitID] = unitStatus
+				}
+			}
+		}
+	}
+
+	for unitID, unitStatus := range units {
+		// remove each unit, taking care to force the unit removal if the workload status is error
+		// note that we do send a separate request for each removal even though the applicationAPI can handle removing multiple units with one call
+		// but its all or nothing with the force parameter. We only want to force remove when necessary
+		log.Info("removing unit from machine", "unit", unitID, "machine", machineID)
+		inError := unitStatus.WorkloadStatus.Status == "error" || unitStatus.AgentStatus.Status == "error"
+		if inError {
+			log.Info("unit is in error state, removing with force")
+		}
+		destroyUnitInput := juju.DestroyUnitsInput{
+			Units:     []string{unitID},
+			ModelUUID: modelUUID,
+			Force:     inError,
+		}
+
+		err := client.Applications.DestroyUnits(ctx, destroyUnitInput)
+		if err != nil {
+			return err
+		}
+	}
+
+	if len(units) == 0 {
+		log.Info(fmt.Sprintf("all units on machine %s are currently in the process of dying. waiting for that to complete", machineID))
+	}
+	return nil
 }
 
 // kubeClientForCluster will fetch a kubeconfig secret based on cluster name/namespace,

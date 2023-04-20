@@ -35,7 +35,7 @@ type CreateApplicationInput struct {
 	CharmRevision   *int
 	Units           int
 	Trust           bool
-	Expose          map[string]interface{}
+	Expose          bool
 	Config          map[string]interface{}
 	Constraints     constraints.Value
 }
@@ -81,6 +81,12 @@ type AddUnitsInput struct {
 	ModelUUID       string
 	NumUnits        int
 	Placement       []*instance.Placement
+}
+
+type DestroyUnitsInput struct {
+	Units     []string
+	ModelUUID string
+	Force     bool
 }
 
 // ConfigEntry is an auxiliar struct to
@@ -280,6 +286,8 @@ func (c applicationsClient) CreateApplication(ctx context.Context, input *Create
 		}, err
 	}
 
+	err = c.processExpose(ctx, applicationAPIClient, input.ApplicationName, input.Expose)
+
 	return &CreateApplicationResponse{
 		AppName:  appName,
 		Revision: *origin.Revision,
@@ -476,10 +484,14 @@ func (c applicationsClient) DestroyApplication(ctx context.Context, input *Destr
 		Force:          input.Force,
 	}
 
-	_, err = applicationAPIClient.DestroyApplications(destroyParams)
-
+	results, err := applicationAPIClient.DestroyApplications(destroyParams)
 	if err != nil {
 		return err
+	}
+	for _, result := range results {
+		if result.Error != nil {
+			return result.Error
+		}
 	}
 
 	return nil
@@ -535,6 +547,25 @@ func (c applicationsClient) AreApplicationUnitsActiveIdle(ctx context.Context, i
 	return true, nil
 }
 
+func (c applicationsClient) AreApplicationUnitsInError(ctx context.Context, input ReadApplicationInput) (bool, error) {
+	readAppResponse, err := c.ReadApplication(ctx, &input)
+	if err != nil {
+		return false, err
+	}
+
+	if len(readAppResponse.Status.Units) < 1 {
+		return false, nil
+	}
+
+	for _, unit := range readAppResponse.Status.Units {
+		if unit.WorkloadStatus.Status == "error" || unit.AgentStatus.Status != "error" {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
 func (c applicationsClient) GetLeaderAddress(ctx context.Context, input ReadApplicationInput) (*string, error) {
 	readAppResponse, err := c.ReadApplication(ctx, &input)
 	if err != nil {
@@ -583,4 +614,41 @@ func (c applicationsClient) AddUnits(ctx context.Context, input AddUnitsInput) (
 	}
 
 	return units, nil
+}
+
+func (c applicationsClient) DestroyUnits(ctx context.Context, input DestroyUnitsInput) error {
+	conn, err := c.GetConnection(ctx, &input.ModelUUID)
+	if err != nil {
+		return err
+	}
+	applicationAPIClient := apiapplication.NewClient(conn)
+	defer applicationAPIClient.Close()
+
+	results, err := applicationAPIClient.DestroyUnits(apiapplication.DestroyUnitsParams{
+		Units:          input.Units,
+		DestroyStorage: true,
+		Force:          input.Force,
+	})
+	if err != nil {
+		return err
+	}
+
+	for _, result := range results {
+		if result.Error != nil {
+			return result.Error
+		}
+	}
+
+	return nil
+}
+
+func (c applicationsClient) processExpose(ctx context.Context, applicationAPIClient *apiapplication.Client, applicationName string, expose bool) error {
+	log := log.FromContext(ctx)
+	if !expose {
+		return nil
+	}
+
+	log.Info(fmt.Sprintf("exposing application %s", applicationName))
+	return applicationAPIClient.Expose(applicationName, nil)
+
 }

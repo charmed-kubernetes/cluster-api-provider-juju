@@ -8,6 +8,7 @@ import (
 
 	"github.com/juju/juju/api"
 	"github.com/juju/juju/api/base"
+	apiclient "github.com/juju/juju/api/client/client"
 	"github.com/juju/juju/api/client/modelconfig"
 	"github.com/juju/juju/api/client/modelmanager"
 	"github.com/juju/juju/core/constraints"
@@ -223,4 +224,19 @@ func (c *modelsClient) DestroyModel(ctx context.Context, input DestroyModelInput
 	}
 
 	return nil
+}
+
+func (c *modelsClient) GetModelStatus(ctx context.Context, modelUUID string) (*params.FullStatus, error) {
+	conn, err := c.GetConnection(ctx, &modelUUID)
+	if err != nil {
+		return nil, err
+	}
+	client := apiclient.NewClient(conn)
+	defer client.Close()
+
+	status, err := client.Status(nil)
+	if err != nil {
+		return nil, err
+	}
+	return status, nil
 }

@@ -35,6 +35,7 @@ import (
 	kbatch "k8s.io/api/batch/v1"
 	kcore "k8s.io/api/core/v1"
 	krbac "k8s.io/api/rbac/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -47,7 +48,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 )
 
 const requeueTime = 10 * time.Second
@@ -92,7 +95,7 @@ type JujuClusterReconciler struct {
 //
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.13.0/pkg/reconcile
-func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res ctrl.Result, reterr error) {
 	log := log.FromContext(ctx)
 
 	jujuCluster := &infrastructurev1beta1.JujuCluster{}
@@ -108,7 +111,7 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			log.Info("waiting for cluster owner to be found")
-			return ctrl.Result{}, nil
+			return ctrl.Result{Requeue: true}, nil
 		}
 		log.Error(err, "failed to get owner Cluster")
 		return ctrl.Result{}, err
@@ -116,7 +119,14 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	if cluster == nil {
 		log.Info("waiting for cluster owner to be non-nil")
-		return ctrl.Result{}, nil
+		return ctrl.Result{Requeue: true}, nil
+	}
+
+	// Initialize the patch helper.
+	patchHelper, err := patch.NewHelper(jujuCluster, r.Client)
+	if err != nil {
+		log.Error(err, "failed to configure the patch helper")
+		return ctrl.Result{Requeue: true}, nil
 	}
 
 	var credentialSecret *kcore.Secret = nil
@@ -155,7 +165,7 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	// Get config data from secret
-	jujuConfig, err := getJujuConfigFromSecret(ctx, jujuCluster, r.Client)
+	jujuConfig, err := getJujuConfigFromSecret(ctx, cluster, jujuCluster, r.Client)
 	if err != nil {
 		log.Error(err, "failed to retrieve juju configuration data from secret")
 		return ctrl.Result{}, err
@@ -223,7 +233,8 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 									return ctrl.Result{}, err
 								}
 								destroyedApps := []string{}
-								for appName := range appStatuses {
+								existingApps := []string{}
+								for appName, appStatus := range appStatuses {
 									appExistsInput := juju.ApplicationExistsInput{
 										ModelUUID:       modelUUID,
 										ApplicationName: appName,
@@ -234,20 +245,44 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 										return ctrl.Result{}, err
 									}
 									if appExists {
-										log.Info(fmt.Sprintf("destroying %s", appName))
-										destroyAppInput := juju.DestroyApplicationInput{
-											ApplicationName: appName,
-											ModelUUID:       modelUUID,
+										existingApps = append(existingApps, appName)
+										log.Info(fmt.Sprintf("%s appStatus.Life: %s", appName, appStatus.Life))
+										if appStatus.Life != "dying" {
+											log.Info(fmt.Sprintf("destroying %s since its currently not dying", appName))
+											log.Info("checking if any application units are in error state")
+											readInput := juju.ReadApplicationInput{
+												ModelUUID:       modelUUID,
+												ApplicationName: appName,
+											}
+											inError, err := jujuClient.Applications.AreApplicationUnitsInError(ctx, readInput)
+											if err != nil {
+												log.Error(err, fmt.Sprintf("failed to check if application %s was in err", appName))
+												return ctrl.Result{}, err
+											}
+											if inError {
+												log.Info(fmt.Sprintf("application %s was in error state, will be using forced removal", appName))
+											}
+											destroyAppInput := juju.DestroyApplicationInput{
+												ApplicationName: appName,
+												ModelUUID:       modelUUID,
+												Force:           inError,
+											}
+											if err := jujuClient.Applications.DestroyApplication(ctx, &destroyAppInput); err != nil {
+												log.Error(err, fmt.Sprintf("failed to destroy %s", appName))
+												return ctrl.Result{}, err
+											}
+											destroyedApps = append(destroyedApps, appName)
 										}
-										if err := jujuClient.Applications.DestroyApplication(ctx, &destroyAppInput); err != nil {
-											log.Error(err, fmt.Sprintf("failed to destroy %s", appName))
-											return ctrl.Result{}, err
-										}
-										destroyedApps = append(destroyedApps, appName)
 									}
 								}
 								if len(destroyedApps) > 0 {
-									log.Info("requeueing after destroying applications", "applications", destroyedApps)
+									log.Info("destroyed the following applications", "applications", destroyedApps)
+								} else {
+									log.Info("all applications are currently in the process of being destroyed.")
+								}
+
+								if len(existingApps) > 0 {
+									log.Info("applications still in existence, requeueing", "applications", existingApps)
 									return ctrl.Result{RequeueAfter: requeueTime}, nil
 								}
 
@@ -392,6 +427,32 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
+	defer func() {
+		log.Info("attempting to patch status")
+
+		// Always attempt to update the model status on each reconcile once the model becomes available
+		modelStatus, err := jujuClient.Models.GetModelStatus(ctx, modelUUID)
+		if err != nil {
+			log.Error(err, "failed to get model status")
+		}
+
+		marshalledStatus, err := json.Marshal(modelStatus)
+		if err != nil {
+			log.Error(err, "failed to marshal model status")
+		}
+		jujuCluster.Status.ModelStatus = &apiextensionsv1.JSON{
+			Raw: marshalledStatus,
+		}
+
+		// Always attempt to Patch the CharmedK8sControlPlane object and status after each reconciliation.
+		if err := patchHelper.Patch(ctx, jujuCluster, patch.WithStatusObservedGeneration{}); err != nil {
+			log.Error(err, "failed to patch JujuCluster")
+		}
+
+		res = ctrl.Result{RequeueAfter: 30 * time.Second}
+		log.Info("successfully patched juju cluster status")
+	}()
+
 	createdApplications, err := createApplicationsIfNeeded(ctx, jujuCluster, jujuClient, modelUUID)
 	if err != nil {
 		log.Error(err, "error creating applications")
@@ -462,15 +523,8 @@ func (r *JujuClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	if !jujuCluster.Status.Ready {
-		helper, err := patch.NewHelper(jujuCluster, r.Client)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		log.Info("patching cluster ready status to true")
+		log.Info("setting cluster ready status to true")
 		jujuCluster.Status.Ready = true
-		if err := helper.Patch(ctx, jujuCluster); err != nil {
-			return ctrl.Result{}, errors.Wrapf(err, "couldn't patch cluster %q", jujuCluster.Name)
-		}
 	}
 
 	log.Info("stopping reconciliation")
@@ -485,6 +539,18 @@ func (r *JujuClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				workqueue.NewItemExponentialFailureRateLimiter(5*time.Millisecond, 5*time.Minute),
 				&workqueue.BucketRateLimiter{Limiter: rate.NewLimiter(rate.Limit(10), 100)},
 			),
+		}).
+		WithEventFilter(predicate.Funcs{
+			UpdateFunc: func(e event.UpdateEvent) bool {
+				oldGeneration := e.ObjectOld.GetGeneration()
+				newGeneration := e.ObjectNew.GetGeneration()
+				// Generation is only updated on spec changes (also on deletion),
+				// not metadata or status
+				// Filter out events where the generation hasn't changed to
+				// avoid being triggered by status updates
+				// This means we wont constantly be updating status
+				return oldGeneration != newGeneration
+			},
 		}).
 		For(&infrastructurev1beta1.JujuCluster{}).
 		Owns(&kcore.Secret{}).
@@ -528,7 +594,7 @@ func (r *JujuClusterReconciler) createJujuControllerResources(ctx context.Contex
 		"./juju add-user %s > NUL;"+
 		"./juju grant capi-juju superuser;"+
 		"./juju show-controller --show-password > controller_data.txt;"+
-		"./kubectl create secret generic %s --from-file=controller-data=./controller_data.txt -n %s", cloudName, cloudName, jujuCluster.Spec.ControllerServiceType, jujuAccountName, controllerDataSecretName, jujuCluster.Namespace)
+		"./kubectl create secret generic %s --from-file=controller-data=./controller_data.txt -n %s", cloudName, cloudName, jujuCluster.Spec.ControllerServiceType, jujuAccountName, cluster.Name+"-"+controllerDataSecretName, jujuCluster.Namespace)
 	job := &kbatch.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Labels:      make(map[string]string),
@@ -600,7 +666,7 @@ func (r *JujuClusterReconciler) deleteJujuControllerResources(ctx context.Contex
 	configSecret := &kcore.Secret{}
 	configSecretKey := client.ObjectKey{
 		Namespace: jujuCluster.Namespace,
-		Name:      controllerDataSecretName,
+		Name:      cluster.Name + "-" + controllerDataSecretName,
 	}
 
 	job := &kbatch.Job{}
@@ -658,13 +724,13 @@ func (r *JujuClusterReconciler) deleteJujuControllerResources(ctx context.Contex
 	return nil
 }
 
-func getJujuConfigFromSecret(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster, c client.Client) (*JujuConfig, error) {
+func getJujuConfigFromSecret(ctx context.Context, cluster *clusterv1.Cluster, jujuCluster *infrastructurev1beta1.JujuCluster, c client.Client) (*JujuConfig, error) {
 	log := log.FromContext(ctx)
 
 	configSecret := &kcore.Secret{}
 	objectKey := client.ObjectKey{
 		Namespace: jujuCluster.Namespace,
-		Name:      controllerDataSecretName,
+		Name:      cluster.Name + "-" + controllerDataSecretName,
 	}
 	if err := c.Get(ctx, objectKey, configSecret); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -945,16 +1011,35 @@ func createIntegrationsIfNeeded(ctx context.Context, jujuCluster *infrastructure
 func createApplicationsIfNeeded(ctx context.Context, jujuCluster *infrastructurev1beta1.JujuCluster, client *juju.Client, modelUUID string) (bool, error) {
 	log := log.FromContext(ctx)
 	created := false
-	easyRSACons, err := constraints.Parse("cores=1", "mem=4G", "root-disk=16G")
+
+	easyRSAConfig, easyRSACons, err := getOptionsAndConstraints(jujuCluster.Spec.DefaultApplicationConfigs.EasyRSAConfig)
 	if err != nil {
-		log.Error(err, "error creating machine constraints")
 		return false, err
 	}
 
-	lbCons, err := constraints.Parse("cores=1", "mem=4G", "root-disk=16G")
+	lbConfig, lbCons, err := getOptionsAndConstraints(jujuCluster.Spec.DefaultApplicationConfigs.KubeAPILoadBalancerConfig)
 	if err != nil {
-		log.Error(err, "error creating machine constraints")
-		return created, err
+		return false, err
+	}
+
+	kcpConfig, kcpCons, err := getOptionsAndConstraints(jujuCluster.Spec.DefaultApplicationConfigs.KubernetesControlPlaneConfig)
+	if err != nil {
+		return false, err
+	}
+
+	kwConfig, kwCons, err := getOptionsAndConstraints(jujuCluster.Spec.DefaultApplicationConfigs.KubernetesWorkerConfig)
+	if err != nil {
+		return false, err
+	}
+
+	etcdConfig, etcdCons, err := getOptionsAndConstraints(jujuCluster.Spec.DefaultApplicationConfigs.EtcdConfig)
+	if err != nil {
+		return false, err
+	}
+
+	containerdConfig, containerdCons, err := getOptionsAndConstraints(jujuCluster.Spec.DefaultApplicationConfigs.ContainerdConfig)
+	if err != nil {
+		return false, err
 	}
 
 	createInputs := []juju.CreateApplicationInput{
@@ -962,62 +1047,67 @@ func createApplicationsIfNeeded(ctx context.Context, jujuCluster *infrastructure
 			ApplicationName: "easyrsa",
 			ModelUUID:       modelUUID,
 			CharmName:       "easyrsa",
-			CharmChannel:    "1.27/edge",
-			CharmBase:       "ubuntu@22.04",
+			CharmChannel:    getChannelForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.EasyRSAConfig, jujuCluster),
+			CharmBase:       getBaseForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.EasyRSAConfig, jujuCluster),
+			Expose:          getExposeForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.EasyRSAConfig, jujuCluster),
 			Units:           1,
 			Constraints:     easyRSACons,
+			Config:          easyRSAConfig,
 		},
 		{
 			ApplicationName: "kubeapi-load-balancer",
 			ModelUUID:       modelUUID,
 			CharmName:       "kubeapi-load-balancer",
-			CharmChannel:    "1.27/edge",
-			CharmBase:       "ubuntu@22.04",
+			CharmChannel:    getChannelForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.KubeAPILoadBalancerConfig, jujuCluster),
+			CharmBase:       getBaseForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.KubeAPILoadBalancerConfig, jujuCluster),
+			Expose:          getExposeForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.KubeAPILoadBalancerConfig, jujuCluster),
 			Units:           1,
 			Constraints:     lbCons,
+			Config:          lbConfig,
 		},
 		{
 			ApplicationName: "kubernetes-control-plane",
 			ModelUUID:       modelUUID,
 			CharmName:       "kubernetes-control-plane",
-			CharmChannel:    "1.27/edge",
-			CharmBase:       "ubuntu@22.04",
+			CharmChannel:    getChannelForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.KubernetesControlPlaneConfig, jujuCluster),
+			CharmBase:       getBaseForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.KubernetesControlPlaneConfig, jujuCluster),
+			Expose:          getExposeForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.KubernetesControlPlaneConfig, jujuCluster),
 			Units:           0,
-			Config: map[string]interface{}{
-				"ignore-missing-cni":      true,
-				"enable-metrics":          false,
-				"enable-dashboard-addons": false,
-				"allow-privileged":        true,
-				"ignore-kube-system-pods": "coredns vsphere-cloud-controller-manager",
-			},
+			Config:          kcpConfig,
+			Constraints:     kcpCons,
 		},
 		{
 			ApplicationName: "kubernetes-worker",
 			ModelUUID:       modelUUID,
 			CharmName:       "kubernetes-worker",
-			CharmChannel:    "1.27/edge",
-			CharmBase:       "ubuntu@22.04",
+			CharmChannel:    getChannelForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.KubernetesWorkerConfig, jujuCluster),
+			CharmBase:       getBaseForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.KubernetesWorkerConfig, jujuCluster),
+			Expose:          getExposeForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.KubernetesWorkerConfig, jujuCluster),
 			Units:           0,
-			Config: map[string]interface{}{
-				"ignore-missing-cni": true,
-				"ingress":            false,
-			},
+			Config:          kwConfig,
+			Constraints:     kwCons,
 		},
 		{
 			ApplicationName: "etcd",
 			ModelUUID:       modelUUID,
 			CharmName:       "etcd",
-			CharmChannel:    "1.27/edge",
-			CharmBase:       "ubuntu@22.04",
+			CharmChannel:    getChannelForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.EtcdConfig, jujuCluster),
+			CharmBase:       getBaseForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.EtcdConfig, jujuCluster),
+			Expose:          getExposeForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.EtcdConfig, jujuCluster),
 			Units:           0,
+			Config:          etcdConfig,
+			Constraints:     etcdCons,
 		},
 		{
 			ApplicationName: "containerd",
 			ModelUUID:       modelUUID,
 			CharmName:       "containerd",
-			CharmChannel:    "1.27/edge",
-			CharmBase:       "ubuntu@22.04",
+			CharmChannel:    getChannelForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.ContainerdConfig, jujuCluster),
+			CharmBase:       getBaseForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.ContainerdConfig, jujuCluster),
+			Expose:          getExposeForDefaultApp(jujuCluster.Spec.DefaultApplicationConfigs.ContainerdConfig, jujuCluster),
 			Units:           0,
+			Config:          containerdConfig,
+			Constraints:     containerdCons,
 		},
 	}
 
@@ -1025,15 +1115,9 @@ func createApplicationsIfNeeded(ctx context.Context, jujuCluster *infrastructure
 	for applicationName, charm := range jujuCluster.Spec.AdditionalApplications.Applications {
 		config := make(map[string]interface{})
 		if charm.Options != nil {
-			configJson, err := json.Marshal(charm.Options)
+			var err error
+			config, err = jsonToConfig(*charm.Options)
 			if err != nil {
-				log.Error(err, "error marshalling charm config")
-				return false, err
-			}
-
-			err = json.Unmarshal(configJson, &config)
-			if err != nil {
-				log.Error(err, "error unmarshalling charm config")
 				return false, err
 			}
 		}
@@ -1053,8 +1137,8 @@ func createApplicationsIfNeeded(ctx context.Context, jujuCluster *infrastructure
 			Trust:           charm.RequiresTrust,
 			Config:          config,
 			Constraints:     cons,
+			Expose:          charm.Expose,
 		})
-
 	}
 
 	for _, createInput := range createInputs {
@@ -1115,4 +1199,71 @@ func (r *JujuClusterReconciler) createRegistrationSecretIfNeeded(ctx context.Con
 	}
 
 	return nil
+}
+
+func jsonToConfig(jsonObject apiextensionsv1.JSON) (map[string]interface{}, error) {
+	config := make(map[string]interface{})
+
+	configJson, err := json.Marshal(jsonObject)
+	if err != nil {
+		return nil, err
+	}
+
+	err = json.Unmarshal(configJson, &config)
+	if err != nil {
+		return nil, err
+	}
+
+	return config, nil
+}
+
+func getOptionsAndConstraints(config *infrastructurev1beta1.DefaultApplicationConfig) (map[string]interface{}, constraints.Value, error) {
+
+	options := make(map[string]interface{})
+	cons := constraints.Value{}
+	if config != nil {
+		if config.Constraints != nil {
+			cons = constraints.Value(*config.Constraints)
+		}
+
+		if config.Options != nil {
+			var err error
+			options, err = jsonToConfig(*config.Options)
+			if err != nil {
+				return nil, constraints.Value{}, err
+			}
+		}
+	}
+
+	return options, cons, nil
+}
+
+func getChannelForDefaultApp(config *infrastructurev1beta1.DefaultApplicationConfig, jujuCluster *infrastructurev1beta1.JujuCluster) string {
+	if config != nil {
+		if config.Channel != "" {
+			return config.Channel
+		}
+	}
+
+	return jujuCluster.Spec.DefaultApplicationConfigs.DefaultChannel
+}
+
+func getBaseForDefaultApp(config *infrastructurev1beta1.DefaultApplicationConfig, jujuCluster *infrastructurev1beta1.JujuCluster) string {
+	if config != nil {
+		if config.Base != "" {
+			return config.Base
+		}
+	}
+
+	return jujuCluster.Spec.DefaultApplicationConfigs.DefaultBase
+}
+
+func getExposeForDefaultApp(config *infrastructurev1beta1.DefaultApplicationConfig, jujuCluster *infrastructurev1beta1.JujuCluster) bool {
+	if config != nil {
+		if config.Expose {
+			return config.Expose
+		}
+	}
+
+	return false
 }

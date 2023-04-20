@@ -179,6 +179,27 @@ type Charm struct {
 	Options       *apiextensionsv1.JSON `json:"options,omitempty"`
 	Constraints   *ConstraintValue      `json:"constraints,omitempty"`
 	RequiresTrust bool                  `json:"requiresTrust,omitempty"`
+	Expose        bool                  `json:"expose,omitempty"`
+}
+
+type DefaultApplicationConfig struct {
+	Options     *apiextensionsv1.JSON `json:"options,omitempty"`
+	Constraints *ConstraintValue      `json:"constraints,omitempty"`
+	// Channel and base can be empty, the default channel and base will cover them if not specified
+	Channel string `json:"channel,omitempty"`
+	Base    string `json:"base,omitempty"`
+	Expose  bool   `json:"expose,omitempty"`
+}
+
+type DefaultApplicationConfigs struct {
+	EasyRSAConfig                *DefaultApplicationConfig `json:"easyRSAConfig,omitempty"`
+	EtcdConfig                   *DefaultApplicationConfig `json:"etcdConfig,omitempty"`
+	KubernetesWorkerConfig       *DefaultApplicationConfig `json:"kubernetesWorkerConfig,omitempty"`
+	KubernetesControlPlaneConfig *DefaultApplicationConfig `json:"kubernetesControlPlaneConfig,omitempty"`
+	KubeAPILoadBalancerConfig    *DefaultApplicationConfig `json:"kubeApiLoadBalancerConfig,omitempty"`
+	ContainerdConfig             *DefaultApplicationConfig `json:"containerdConfig,omitempty"`
+	DefaultChannel               string                    `json:"defaultChannel"`
+	DefaultBase                  string                    `json:"defaultBase"`
 }
 
 type AdditionalApplications struct {
@@ -210,6 +231,8 @@ type JujuClusterSpec struct {
 	// +optional
 	Credential *Credential `json:"credential,omitempty"`
 
+	DefaultApplicationConfigs *DefaultApplicationConfigs `json:"defaultApplicationConfigs,omitempty"`
+
 	// List of additional applications to deploy in the model
 	AdditionalApplications AdditionalApplications `json:"additionalApplications,omitempty"`
 
@@ -228,6 +251,8 @@ type JujuClusterSpec struct {
 type JujuClusterStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
+
+	ModelStatus *apiextensionsv1.JSON `json:"modelStatus,omitempty"`
 
 	// Required fields for infra providers
 	// Ready denotes that the cluster (infrastructure) is ready.

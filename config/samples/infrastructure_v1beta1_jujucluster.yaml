@@ -41,7 +41,41 @@ spec:
         endpoint: 10.246.152.100
     authTypes:
       - "userpass"
-additionalApplications:
+  defaultApplicationConfigs:
+    defaultChannel: 1.27/edge
+    defaultBase: ubuntu@22.04
+    kubernetesControlPlaneConfig:
+      options:
+        ignore-missing-cni: true
+        enable-metrics: false
+        enable-dashboard-addons: false
+        allow-privileged: "true"
+        ignore-kube-system-pods: "coredns vsphere-cloud-controller-manager"
+      channel: 1.27/edge
+      base: ubuntu@22.04
+      expose: true
+    kubernetesWorkerConfig:
+      options:
+        ignore-missing-cni: true
+        ingress: false
+      channel: 1.27/edge
+      base: ubuntu@22.04
+      expose: true
+    easyRSAConfig:
+      constraints:
+        cores: 1
+        mem: 4000
+        root-disk: 16000
+      channel: 1.27/edge
+      base: ubuntu@22.04
+    kubeApiLoadBalancerConfig:
+      constraints:
+        cores: 1
+        mem: 4000
+        root-disk: 16000
+      channel: 1.27/edge
+      base: ubuntu@22.04
+  additionalApplications:
     applications:
       vsphere-integrator:
         charm: vsphere-integrator      
