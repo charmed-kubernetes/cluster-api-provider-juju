@@ -10,6 +10,8 @@ DEPLOY_IMG ?= $(REGISTRY)$(IMG_PATH)$(IMG_NAME):$(IMG_TAG)
 
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
 ENVTEST_K8S_VERSION = 1.25.0
+# Components file to be used by clusterctl
+COMPSFILE=infrastructure-components.yaml
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -102,6 +104,21 @@ docker-buildx: test ## Build and push docker image for the manager for cross-pla
 	- docker buildx build --push --platform=$(PLATFORMS) --tag ${IMG} -f Dockerfile.cross
 	- docker buildx rm project-v3-builder
 	rm Dockerfile.cross
+
+.PHONY: components
+components: manifests kustomize ## Produce the components yaml
+	echo "---" > $(COMPSFILE)
+	$(KUSTOMIZE) build config/default/ >> $(COMPSFILE)
+
+.PHONY: draft-release
+draft-release: components ## Create a GitHub draft release
+ifndef RELEASE_TAG
+	$(error missing RELEASE_TAG)
+endif
+	gh release create "$(RELEASE_TAG)" metadata.yaml "$(COMPSFILE)" \
+		--target "$(shell git rev-parse --verify HEAD)" \
+		--generate-notes \
+		--draft
 
 ##@ Deployment
 
