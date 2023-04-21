@@ -30,7 +30,7 @@ spec:
   controllerServiceType: loadbalancer
   credential:
     credentialSecretName: ${CLUSTER_NAME}-credential-secret
-    credentialSecretNamespace: default
+    credentialSecretNamespace: ${CREDENTIAL_NAMESPACE}
   cloud:
     name: ${CLUSTER_NAME}
     type: vsphere

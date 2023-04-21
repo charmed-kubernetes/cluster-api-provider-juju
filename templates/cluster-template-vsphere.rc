@@ -1,5 +1,6 @@
 export CONTROL_PLANE_MACHINE_COUNT=1
 export WORKER_MACHINE_COUNT=1
+export CREDENTIAL_NAMESPACE=default
 
 # Charm configuration
 export CHARM_CHANNEL=1.27/edge
