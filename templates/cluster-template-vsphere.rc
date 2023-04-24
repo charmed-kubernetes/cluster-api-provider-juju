@@ -1,0 +1,16 @@
+export CONTROL_PLANE_MACHINE_COUNT=1
+export WORKER_MACHINE_COUNT=1
+export CREDENTIAL_NAMESPACE=default
+
+# Charm configuration
+export CHARM_CHANNEL=1.27/edge
+export CHARM_BASE=ubuntu@22.04
+
+# VSphere configuration 
+export VSPHERE_REGION=my-region
+export ENDPOINT=my-endpoint
+export VMFOLDER=my-vm-folder
+export DATASTORE=my-datastore
+export PRIMARY_NETWORK=my-primary-network
+
+

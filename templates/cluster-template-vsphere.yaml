@@ -1,0 +1,166 @@
+---
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: Cluster
+metadata:
+  name: ${CLUSTER_NAME}
+spec:
+  infrastructureRef:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    kind: JujuCluster
+    name: ${CLUSTER_NAME}
+  controlPlaneRef:
+    kind: CharmedK8sControlPlane
+    apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+    name: ${CLUSTER_NAME}-control-plane
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: JujuCluster
+metadata:
+  name: ${CLUSTER_NAME}
+spec:
+  model:
+    name: ${CLUSTER_NAME}
+    cloudRegion: ${VSPHERE_REGION}
+    config:
+      datastore: ${DATASTORE}
+      primary-network: ${PRIMARY_NETWORK}
+    constraints:
+      arch: amd64
+  # using loadbalancer requires metallb on vsphere
+  controllerServiceType: loadbalancer
+  credential:
+    credentialSecretName: ${CLUSTER_NAME}-credential-secret
+    credentialSecretNamespace: ${CREDENTIAL_NAMESPACE}
+  cloud:
+    name: ${CLUSTER_NAME}
+    type: vsphere
+    endpoint: ${ENDPOINT}
+    regions:
+      - name: ${VSPHERE_REGION}
+        endpoint: ${ENDPOINT}
+    authTypes:
+      - "userpass"
+  defaultApplicationConfigs:
+    defaultChannel: ${CHARM_CHANNEL}
+    defaultBase: ${CHARM_BASE}
+    kubernetesControlPlaneConfig:
+      options:
+        ignore-missing-cni: true
+        enable-metrics: false
+        enable-dashboard-addons: false
+        allow-privileged: "true"
+        ignore-kube-system-pods: "coredns vsphere-cloud-controller-manager"
+      expose: true
+    kubernetesWorkerConfig:
+      options:
+        ignore-missing-cni: true
+        ingress: false
+      expose: true
+    easyRSAConfig:
+      constraints:
+        cores: 1
+        mem: 4000
+        root-disk: 16000
+    kubeApiLoadBalancerConfig:
+      constraints:
+        cores: 1
+        mem: 4000
+        root-disk: 16000
+  additionalApplications:
+    applications:
+      vsphere-integrator:
+        charm: vsphere-integrator
+        channel: ${CHARM_CHANNEL}
+        base: ${CHARM_BASE}
+        numUnits: 1
+        options:
+          datastore: ${DATASTORE}
+          folder: ${VMFOLDER}
+        requiresTrust: true
+      vsphere-cloud-provider:
+        charm: vsphere-cloud-provider
+        channel: ${CHARM_CHANNEL}
+        base: ${CHARM_BASE}
+        numUnits: 0
+    integrations:
+      - - vsphere-cloud-provider:vsphere-integration
+        - vsphere-integrator:clients
+      - - vsphere-cloud-provider:certificates
+        - easyrsa:client
+      - - vsphere-cloud-provider:kube-control
+        - kubernetes-control-plane:kube-control
+      - - vsphere-cloud-provider:external-cloud-provider
+        - kubernetes-control-plane:external-cloud-provider
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: JujuMachineTemplate
+metadata:
+  name: ${CLUSTER_NAME}-control-plane
+spec:
+  template:
+    spec:
+      useJujuProviderID: false
+      constraints:
+        cores: 2
+        mem: 8000
+        root-disk: 16000
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+kind: CharmedK8sControlPlane
+metadata:
+  labels:
+    cluster.x-k8s.io/cluster-name: ${CLUSTER_NAME}
+  name: ${CLUSTER_NAME}-control-plane
+spec:
+  replicas: ${CONTROL_PLANE_MACHINE_COUNT:=1}
+  machineTemplate:
+    kind: JujuMachineTemplate
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    name: ${CLUSTER_NAME}-control-plane
+  controlPlaneConfig:
+    controlPlaneApplications:
+      - kubernetes-control-plane
+      - etcd
+---
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: MachineDeployment
+metadata:
+  name: ${CLUSTER_NAME}-md-0
+spec:
+  clusterName: ${CLUSTER_NAME}
+  replicas: ${WORKER_MACHINE_COUNT:=1}
+  template:
+    spec:
+      clusterName: ${CLUSTER_NAME}
+      bootstrap:
+        configRef:
+          name: ${CLUSTER_NAME}-md-0
+          apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+          kind: CharmedK8sConfigTemplate
+      infrastructureRef:
+        name: ${CLUSTER_NAME}-md-0
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: JujuMachineTemplate
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: JujuMachineTemplate
+metadata:
+  name: ${CLUSTER_NAME}-md-0
+spec:
+  template:
+    spec:
+      useJujuProviderID: false
+      constraints:
+        cores: 2
+        mem: 8000
+        root-disk: 16000
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+kind: CharmedK8sConfigTemplate
+metadata:
+  name: ${CLUSTER_NAME}-md-0
+spec:
+  template:
+    spec:
+      workerApplications:
+        - kubernetes-worker
