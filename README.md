@@ -196,7 +196,7 @@ juju integrate calico:cni kubernetes-control-plane:cni
 juju integrate calico:cni kubernetes-worker:cni
 ```
 
-Note that if you are using a verision of Juju prior to 3.0, you will need to use the `relate` command instead of `integrate`. 
+Note that if you are using a version of Juju prior to 3.0, you will need to use the `relate` command instead of `integrate`. 
 
 Verify all applications in the model reach an active/idle status (this might take a few minutes after deploying the CNI charm):
 
