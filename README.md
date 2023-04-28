@@ -260,3 +260,4 @@ limitations under the License.
 [these instructions]: https://cluster-api.sigs.k8s.io/user/quick-start.html#install-clusterctl
 [Juju documentation]: https://juju.is/docs/olm/add-credentials#heading--use-a-yaml-file
 [clusterctl configuration file]: https://cluster-api.sigs.k8s.io/clusterctl/configuration.html
+[Charmed Kubernetes documentation]: https://ubuntu.com/kubernetes/docs/install-manual
