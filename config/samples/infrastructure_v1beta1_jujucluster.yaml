@@ -42,7 +42,7 @@ spec:
     authTypes:
       - "userpass"
   defaultApplicationConfigs:
-    defaultChannel: 1.27/edge
+    defaultChannel: 1.27/stable
     defaultBase: ubuntu@22.04
     kubernetesControlPlaneConfig:
       options:
@@ -51,14 +51,14 @@ spec:
         enable-dashboard-addons: false
         allow-privileged: "true"
         ignore-kube-system-pods: "coredns vsphere-cloud-controller-manager"
-      channel: 1.27/edge
+      channel: 1.27/stable
       base: ubuntu@22.04
       expose: true
     kubernetesWorkerConfig:
       options:
         ignore-missing-cni: true
         ingress: false
-      channel: 1.27/edge
+      channel: 1.27/stable
       base: ubuntu@22.04
       expose: true
     easyRSAConfig:
@@ -66,20 +66,20 @@ spec:
         cores: 1
         mem: 4000
         root-disk: 16000
-      channel: 1.27/edge
+      channel: 1.27/stable
       base: ubuntu@22.04
     kubeApiLoadBalancerConfig:
       constraints:
         cores: 1
         mem: 4000
         root-disk: 16000
-      channel: 1.27/edge
+      channel: 1.27/stable
       base: ubuntu@22.04
   additionalApplications:
     applications:
       vsphere-integrator:
         charm: vsphere-integrator      
-        channel: 1.27/edge
+        channel: 1.27/stable
         base: ubuntu@22.04
         numUnits: 1
         options:   
@@ -88,7 +88,7 @@ spec:
         requiresTrust: true
       vsphere-cloud-provider:
         charm: vsphere-cloud-provider      
-        channel: 1.27/edge
+        channel: 1.27/stable
         base: ubuntu@22.04
         numUnits: 0
     integrations:
