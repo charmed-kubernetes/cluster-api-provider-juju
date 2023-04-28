@@ -146,13 +146,13 @@ The registration secret is named `<your-cluster-name>-registration-string`.
 The encoded registration data is contained in the key `registration-string`. You can decode the data contained in that key with the following command:
 
 ```sh
-kubectl get secret jujucluster-registration-string -o jsonpath='{.data.registration-string}' | base64 --decode
+REGISTRATION_STRING=kubectl get secret jujucluster-registration-string -o jsonpath='{.data.registration-string}' | base64 --decode
 ```
 
 The above command will output the decoded registration string, which you can then pass to the `juju register` command:
 
 ```sh
-juju register <registration_string>
+juju register $REGISTRATION_STRING
 ```
 
 You will be prompted to enter a new password for the account, and choose a controller name (accepting the default name is fine). You can then switch 

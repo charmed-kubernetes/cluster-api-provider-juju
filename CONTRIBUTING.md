@@ -83,7 +83,7 @@ After creating the sample resources, you can check the controller-manager logs a
 Eventually it should create a model, deploy charms, and create integrations. Once the necessary charms have come up, the cluster will be marked as ready.
 
 ### Connecting the deployed controller to a local Juju client
-See the process described in the [Deploying a CNI](#deploying-a-cni) for details on connecting the controller to a local client.
+See the process described in the [Deploying a CNI](README.md#deploying-a-cni) for details on connecting the controller to a local client.
 
 ### Tearing things down
 1.  Delete the sample cluster:
