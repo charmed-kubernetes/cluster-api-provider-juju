@@ -129,6 +129,8 @@ metadata:
 spec:
   clusterName: ${CLUSTER_NAME}
   replicas: ${WORKER_MACHINE_COUNT:=1}
+  selector:
+    matchLabels:
   template:
     spec:
       clusterName: ${CLUSTER_NAME}

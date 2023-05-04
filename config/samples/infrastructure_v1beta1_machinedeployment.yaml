@@ -5,6 +5,8 @@ metadata:
 spec:
   clusterName: cluster-sample
   replicas: 1
+  selector:
+    matchLabels:
   template:
     spec:
       clusterName: cluster-sample
