@@ -1,0 +1,197 @@
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: JujuCluster
+metadata:
+  labels:
+    app.kubernetes.io/name: jujucluster
+    app.kubernetes.io/instance: jujucluster-sample
+    app.kubernetes.io/part-of: cluster-api-provider-juju
+    app.kuberentes.io/managed-by: kustomize
+    app.kubernetes.io/created-by: cluster-api-provider-juju
+  name: jujucluster-sample
+spec:
+  model:
+    name: jujucluster-sample
+    cloudRegion: Boston
+    config: 
+      juju-http-proxy: "http://squid.internal:3128"
+      apt-http-proxy: "http://squid.internal:3128"
+      snap-http-proxy: "http://squid.internal:3128"
+      juju-https-proxy: "http://squid.internal:3128"
+      apt-https-proxy: "http://squid.internal:3128"
+      snap-https-proxy: "http://squid.internal:3128"
+      apt-no-proxy: "localhost,127.0.0.1,ppa.launchpad.net,launchpad.net"
+      juju-no-proxy: "localhost,127.0.0.1,0.0.0.0,ppa.launchpad.net,launchpad.net,10.0.8.0/24,10.246.154.0/24,10.246.153.0/24"
+      logging-config: "<root>=DEBUG"
+      datastore: "vsanDatastore"
+      primary-network: "VLAN_2763"
+      force-vm-hardware-version: "17"
+    constraints:
+      arch: amd64
+  # using loadbalancer requires metallb on vsphere
+  controllerServiceType: loadbalancer
+  credential:
+    credentialSecretName: jujucluster-sample-credential-secret
+    credentialSecretNamespace: default
+  cloud:
+    name: jujucluster-sample
+    type: vsphere
+    endpoint: 10.246.152.100
+    regions:
+      - name: Boston
+        endpoint: 10.246.152.100
+    authTypes:
+      - "userpass"
+  defaultApplicationConfigs:
+    defaultChannel: 1.27/stable
+    defaultBase: ubuntu@22.04
+    kubernetesControlPlaneConfig:
+      options:
+        ignore-missing-cni: true
+        enable-metrics: false
+        enable-dashboard-addons: false
+        allow-privileged: "true"
+        ignore-kube-system-pods: "coredns vsphere-cloud-controller-manager"
+      channel: 1.27/stable
+      base: ubuntu@22.04
+      expose: true
+    kubernetesWorkerConfig:
+      options:
+        ignore-missing-cni: true
+        ingress: false
+      channel: 1.27/stable
+      base: ubuntu@22.04
+      expose: true
+    easyRSAConfig:
+      constraints:
+        cores: 1
+        mem: 4000
+        root-disk: 16000
+      channel: 1.27/stable
+      base: ubuntu@22.04
+    kubeApiLoadBalancerConfig:
+      constraints:
+        cores: 1
+        mem: 4000
+        root-disk: 16000
+      channel: 1.27/stable
+      base: ubuntu@22.04
+  additionalApplications:
+    applications:
+      vsphere-integrator:
+        charm: vsphere-integrator      
+        channel: 1.27/stable
+        base: ubuntu@22.04
+        numUnits: 1
+        options:   
+          datastore: vsanDatastore
+          folder: k8s-ci-root 
+        requiresTrust: true
+      vsphere-cloud-provider:
+        charm: vsphere-cloud-provider      
+        channel: 1.27/stable
+        base: ubuntu@22.04
+        numUnits: 0
+    integrations:
+      - - vsphere-cloud-provider:vsphere-integration
+        - vsphere-integrator:clients
+      - - vsphere-cloud-provider:certificates
+        - easyrsa:client
+      - - vsphere-cloud-provider:kube-control
+        - kubernetes-control-plane:kube-control
+      - - vsphere-cloud-provider:external-cloud-provider
+        - kubernetes-control-plane:external-cloud-provider
+---
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: Cluster
+metadata:
+  name: cluster-sample
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks: ["192.168.0.0/16"]
+  infrastructureRef:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    kind: JujuCluster
+    name: jujucluster-sample
+  controlPlaneRef:
+    kind: CharmedK8sControlPlane
+    apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+    name: charmedk8scontrolplane-sample
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: JujuMachineTemplate
+metadata:
+  name: jujumachinetemplate-controlplane
+spec:
+  template:
+    spec:
+      useJujuProviderID: false
+      constraints: 
+        cores: 2
+        mem: 8000
+        root-disk: 16000
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+kind: CharmedK8sControlPlane
+metadata:
+  labels:
+    cluster.x-k8s.io/cluster-name: cluster-sample
+    app.kubernetes.io/name: charmedk8scontrolplane
+    app.kubernetes.io/instance: charmedk8scontrolplane-sample
+    app.kubernetes.io/part-of: cluster-api-control-plane-provider-charmed-k8s
+    app.kuberentes.io/managed-by: kustomize
+    app.kubernetes.io/created-by: cluster-api-control-plane-provider-charmed-k8s
+  name: charmedk8scontrolplane-sample
+spec:
+  replicas: 1
+  machineTemplate:
+    kind: JujuMachineTemplate
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    name: jujumachinetemplate-controlplane
+  controlPlaneConfig:
+    controlPlaneApplications:
+      - kubernetes-control-plane
+      - etcd
+---
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: MachineDeployment
+metadata:
+  name: machinedeployment-sample
+spec:
+  clusterName: cluster-sample
+  replicas: 1
+  template:
+    spec:
+      clusterName: cluster-sample
+      bootstrap:
+        configRef:
+          name: charmedk8sconfig-machinedeployment
+          apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+          kind: CharmedK8sConfigTemplate
+      infrastructureRef:
+        name: jujumachinetemplate-machinedeployment
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: JujuMachineTemplate
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: JujuMachineTemplate
+metadata:
+  name: jujumachinetemplate-machinedeployment
+spec:
+  template:
+    spec:
+      useJujuProviderID: false
+      constraints: 
+        cores: 2
+        mem: 8000
+        root-disk: 16000
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+kind: CharmedK8sConfigTemplate
+metadata:
+  name: charmedk8sconfig-machinedeployment
+spec:
+  template:
+    spec:
+      workerApplications:
+        - kubernetes-worker
