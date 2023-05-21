@@ -39,7 +39,7 @@ jobs:
       - name: Test creds
         run: echo "$B64_CREDS" 
       - name: Test branch name
-        run: echo "$GITHUB_REF_NAME" 
+        run: echo "$GITHUB_HEAD_REF" 
       
 
 # jobs:
