@@ -19,7 +19,7 @@ jobs:
         uses: actions/checkout@v3
         with:
           submodules: 'true'
-      - name: Set env
+      - name: Set cluster resources env
         # the cluster resources are expected to be provided to pytest as an env var which holds a base64 encoded string
         # since it will be a multiline env var special care is needed
         # https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions#multiline-strings
@@ -38,13 +38,22 @@ jobs:
         run: echo "$DOCKERHUB_PASSWORD"
       - name: Test creds
         run: echo "$B64_CREDS" 
+      - name: Test branch name
+        run: echo "$GITHUB_REF_NAME" 
       
 
 # jobs:
 #   integration-test:
 #     name: VSphere Integration Test
 #     runs-on: self-hosted
-#     timeout-minutes: 120
+#     timeout-minutes: 180
+#     env: 
+#       # These secrets are repository secrets
+#       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+#       DOCKERHUB_PASSWORD: ${{ secrets.DOCKERHUB_PASSWORD }}
+#       B64_CREDS: ${{ secrets.B64_ENCODED_CI_CREDS }}
+#       # GITHUB_TOKEN is an automatically included secret available to the workflow
+#       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 #     steps:
 #       - name: Check out code
 #         uses: actions/checkout@v3
@@ -66,7 +75,7 @@ jobs:
 #             --model-default primary-network=VLAN_2763
 #             --model-default force-vm-hardware-version=17
 #       - name: Run test
-#         run: tox -e integration -- --basetemp=/home/ubuntu/pytest
+#         run: tox -c cluster-api-charmed-k8s-e2e -e integration -- --infra-branch=parsing-fix-for-microk8s-clouds --control-plane-branch=parsing-fix --metallb-ip-range=10.246.153.239-10.246.153.239
 #       - name: Setup Debug Artifact Collection
 #         if: ${{ failure() }}
 #         run: mkdir tmp
