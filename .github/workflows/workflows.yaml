@@ -11,7 +11,7 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v3
         with:
-        submodules: 'true'
+          submodules: 'true'
       - name: Set env
         run: echo "B64_RESOURCES=$(base64 test/data/ci-resources.yaml)" >> $GITHUB_ENV
       - name: Test
