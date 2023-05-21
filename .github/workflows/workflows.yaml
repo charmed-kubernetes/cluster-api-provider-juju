@@ -23,7 +23,7 @@ jobs:
           base64 test/data/ci-resources.yaml >> "$GITHUB_ENV"
           echo "$EOF" >> "$GITHUB_ENV"
       - name: Test
-        run: echo $B64_RESOURCES
+        run: echo $B64_RESOURCES | base64 -d 
       
 
 # jobs:
