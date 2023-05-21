@@ -17,7 +17,13 @@ jobs:
       # - name: Test
       #   run: echo $B64_RESOURCES
       - name: Set env
-        run: base64 test/data/ci-resources.yaml
+        run: |
+          EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
+          echo "B64_RESOURCES<<$EOF" >> "$GITHUB_ENV"
+          base64 test/data/ci-resources.yaml >> "$GITHUB_ENV"
+          echo "$EOF" >> "$GITHUB_ENV"
+      - name: Test
+        run: echo $B64_RESOURCES
       
 
 # jobs:
