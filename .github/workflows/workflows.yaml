@@ -7,24 +7,27 @@ jobs:
     name: VSphere Integration Test
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    env: 
+      # These secrets are repository secrets
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_PASSWORD: ${{ secrets.DOCKERHUB_PASSWORD }}
+      B64_CREDS: ${{ secrets.B64_ENCODED_CI_CREDS }}
+      # GITHUB_TOKEN is an automatically included secret available to the workflow
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Check out code
         uses: actions/checkout@v3
         with:
           submodules: 'true'
-      # https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions#multiline-strings
       - name: Set env
+        # the cluster resources are expected to be provided to pytest as an env var which holds a base64 encoded string
+        # since it will be a multiline env var special care is needed
+        # https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions#multiline-strings
         run: |
           EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
           echo "B64_RESOURCES<<$EOF" >> "$GITHUB_ENV"
           base64 test/data/ci-resources.yaml >> "$GITHUB_ENV"
           echo "$EOF" >> "$GITHUB_ENV"
-          echo "B64_CREDS<<$EOF" >> "$GITHUB_ENV"
-          base64 test/data/ci-resources.yaml >> "$GITHUB_ENV"
-          echo "$EOF" >> "$GITHUB_ENV"
-          echo "GH_TOKEN=some_token" >> "$GITHUB_ENV"
-          echo "DOCKERHUB_USERNAME=some_username" >> "$GITHUB_ENV"
-          echo "DOCKERHUB_PASSWORD=some_password" >> "$GITHUB_ENV"
       - name: Test resources
         run: echo "$B64_RESOURCES" | base64 -d 
       - name: Test token
@@ -34,7 +37,7 @@ jobs:
       - name: Test password
         run: echo "$DOCKERHUB_PASSWORD"
       - name: Test creds
-        run: echo "$B64_CREDS" | base64 -d 
+        run: echo "$B64_CREDS" 
       
 
 # jobs:
