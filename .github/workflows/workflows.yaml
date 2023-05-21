@@ -1,0 +1,62 @@
+name: Test Suite
+on:
+  pull_request:
+
+jobs:
+  integration-test:
+    name: VSphere Integration Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v3
+        with:
+        submodules: 'true'
+      - name: Set env
+        run: echo "B64_RESOURCES=$(base64 test/data/ci-resources.yaml)" >> $GITHUB_ENV
+      - name: Test
+        run: echo $B64_RESOURCES
+      
+
+# jobs:
+#   integration-test:
+#     name: VSphere Integration Test
+#     runs-on: self-hosted
+#     timeout-minutes: 120
+#     steps:
+#       - name: Check out code
+#         uses: actions/checkout@v3
+#       - name: Setup Python
+#         uses: actions/setup-python@v4
+#         with:
+#           python-version: 3.8
+#       - name: Setup operator environment
+#         uses: charmed-kubernetes/actions-operator@main
+#         with:
+#           provider: vsphere
+#           juju-channel: 3.1/stable
+#           credentials-yaml: ${{ secrets.CREDENTIALS_YAML }}
+#           clouds-yaml: ${{ secrets.CLOUDS_YAML }}
+#           bootstrap-constraints: "arch=amd64 cores=2 mem=4G"
+#           bootstrap-options: >-
+#             ${{ secrets.JAMMY_BOOTSTRAP_OPTIONS }}
+#             --model-default datastore=vsanDatastore
+#             --model-default primary-network=VLAN_2763
+#             --model-default force-vm-hardware-version=17
+#       - name: Run test
+#         run: tox -e integration -- --basetemp=/home/ubuntu/pytest
+#       - name: Setup Debug Artifact Collection
+#         if: ${{ failure() }}
+#         run: mkdir tmp
+#       - name: Collect Juju Status
+#         if: ${{ failure() }}
+#         run: |
+#           juju status 2>&1 | tee tmp/juju-status.txt
+#           juju-crashdump -s -m controller -a debug-layer -a config -o tmp/
+#           mv juju-crashdump-* tmp/ | true
+#       - name: Upload debug artifacts
+#         if: ${{ failure() }}
+#         uses: actions/upload-artifact@v3
+#         with:
+#           name: test-run-artifacts
+#           path: tmp
