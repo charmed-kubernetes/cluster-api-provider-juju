@@ -19,11 +19,19 @@ jobs:
           echo "B64_RESOURCES<<$EOF" >> "$GITHUB_ENV"
           base64 test/data/ci-resources.yaml >> "$GITHUB_ENV"
           echo "$EOF" >> "$GITHUB_ENV"
+          echo "B64_CREDS<<$EOF" >> "$GITHUB_ENV"
+          base64 test/data/ci-resources.yaml >> "$GITHUB_ENV"
+          echo "$EOF" >> "$GITHUB_ENV"
           echo "GH_TOKEN=some_token" >> "$GITHUB_ENV"
+          echo "DOCKERHUB_USERNAME=some_username" >> "$GITHUB_ENV"
+          echo "DOCKERHUB_PASSWORD=some_password" >> "$GITHUB_ENV"
       - name: Test
         run: |
           echo "$B64_RESOURCES" | base64 -d 
-          echo "$GH_TOKEN" 
+          echo "\n$GH_TOKEN" 
+          echo "\n$DOCKERHUB_USERNAME" 
+          echo "\n$DOCKERHUB_PASSWORD"
+          echo "\n$B64_CREDS" | base64 -d 
       
 
 # jobs:
