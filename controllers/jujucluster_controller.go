@@ -675,11 +675,6 @@ func (r *JujuClusterReconciler) deleteJujuControllerResources(ctx context.Contex
 		Name:      jujuCluster.Name + "-juju-controller-bootstrap",
 	}
 
-	namespace := &kcore.Namespace{}
-	namespaceKey := client.ObjectKey{
-		Name: fmt.Sprintf("controller-%s", jujuCluster.Name+"-k8s-cloud"),
-	}
-
 	type objectKeyPair struct {
 		object  client.Object
 		key     client.ObjectKey
@@ -697,8 +692,38 @@ func (r *JujuClusterReconciler) deleteJujuControllerResources(ctx context.Contex
 		{clientCRB, clientCRBKey, client.DeleteOptions{}},
 		{clientSA, clientSAKey, client.DeleteOptions{}},
 		{job, jobKey, jobOptions},
-		{namespace, namespaceKey, client.DeleteOptions{}},
 	}
+
+	// Look for the controller namespace so we can delete it
+	// Doing things this way since we do not have much control over the name of the controller namespace
+	// For some clouds (such as microk8s), juju will append additional information onto the end of the namespace name besides just the name of the k8s cloud
+	// we know at least the name will look like controller-{jujuCluster.Name}-{possibly some additional stuff}
+	// so we can list all available namespaces, look for one whose name contains controller-{jujuCluster.Name}, and then
+	// delete that
+	namespaceList := kcore.NamespaceList{}
+	if err := r.Client.List(
+		ctx,
+		&namespaceList,
+	); err != nil {
+		log.Error(err, "failed to list namespaces")
+		return err
+	}
+
+	foundControllerNamespace := false
+	for _, namespace := range namespaceList.Items {
+		if strings.Contains(namespace.Name, "controller-"+jujuCluster.Name) {
+			foundControllerNamespace = true
+			namespaceKey := client.ObjectKey{
+				Name: namespace.Name,
+			}
+			objectKeyPairs = append(objectKeyPairs, objectKeyPair{&namespace, namespaceKey, client.DeleteOptions{}})
+		}
+	}
+
+	if !foundControllerNamespace {
+		log.Error(nil, fmt.Sprintf("failed to find juju controller namespace with name containing %s, manual deletion of controller namespace may be necessary", "controller-"+jujuCluster.Name))
+	}
+
 	for _, pair := range objectKeyPairs {
 
 		err := r.Get(ctx, pair.key, pair.object)
