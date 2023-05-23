@@ -21,13 +21,7 @@ jobs:
           submodules: 'true'
       - name: Set cluster resources env
         # the cluster resources are expected to be provided to pytest as an env var which holds a base64 encoded string
-        # since it will be a multiline env var special care is needed
-        # https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions#multiline-strings
-        run: |
-          EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
-          echo "B64_RESOURCES<<$EOF" >> "$GITHUB_ENV"
-          base64 test/data/ci-resources.yaml >> "$GITHUB_ENV"
-          echo "$EOF" >> "$GITHUB_ENV"
+        run: echo "B64_RESOURCES=$(base64 -w0 test/data/ci-resources.yaml)" >> $GITHUB_ENV
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
