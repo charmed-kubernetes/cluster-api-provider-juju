@@ -1,4 +1,4 @@
 [submodule "cluster-api-charmed-k8s-e2e"]
 	path = cluster-api-charmed-k8s-e2e
 	url = https://github.com/charmed-kubernetes/cluster-api-charmed-k8s-e2e.git
-	branch = scp/testing
+	branch = main
