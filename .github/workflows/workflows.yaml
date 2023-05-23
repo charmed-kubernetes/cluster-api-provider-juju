@@ -1,0 +1,58 @@
+name: Test Suite
+on:
+  pull_request:
+
+jobs:
+  integration-test:
+    name: VSphere Integration Test
+    runs-on: self-hosted
+    timeout-minutes: 120
+    env: 
+      # These secrets are repository secrets
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_PASSWORD: ${{ secrets.DOCKERHUB_PASSWORD }}
+      B64_CREDS: ${{ secrets.B64_ENCODED_CI_CREDS }}
+      # GITHUB_TOKEN is an automatically included secret available to the workflow
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v3
+        with:
+          submodules: 'true'
+      - name: Set cluster resources env
+        # the cluster resources are expected to be provided to pytest as an env var which holds a base64 encoded string
+        run: echo "B64_RESOURCES=$(base64 -w0 test/data/ci-resources.yaml)" >> $GITHUB_ENV
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.8
+      - name: Setup operator environment
+        uses: charmed-kubernetes/actions-operator@main
+        with:
+          provider: vsphere
+          juju-channel: 3.1/stable
+          credentials-yaml: ${{ secrets.CREDENTIALS_YAML }}
+          clouds-yaml: ${{ secrets.CLOUDS_YAML }}
+          bootstrap-constraints: "arch=amd64 cores=2 mem=4G"
+          bootstrap-options: >-
+            ${{ secrets.JAMMY_BOOTSTRAP_OPTIONS }}
+            --model-default datastore=vsanDatastore
+            --model-default primary-network=VLAN_2763
+            --model-default force-vm-hardware-version=17
+      - name: Run test
+        run: tox -c cluster-api-charmed-k8s-e2e -e e2e -- --infra-branch=$GITHUB_HEAD_REF --control-plane-branch=parsing-fix --metallb-ip-range=10.246.153.239-10.246.153.239
+      - name: Setup Debug Artifact Collection
+        if: ${{ failure() }}
+        run: mkdir tmp
+      - name: Collect Juju Status
+        if: ${{ failure() }}
+        run: |
+          juju status 2>&1 | tee tmp/juju-status.txt
+          juju-crashdump -s -m controller -a debug-layer -a config -o tmp/
+          mv juju-crashdump-* tmp/ | true
+      - name: Upload debug artifacts
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v3
+        with:
+          name: test-run-artifacts
+          path: tmp
