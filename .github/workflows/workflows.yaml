@@ -40,7 +40,7 @@ jobs:
             --model-default primary-network=VLAN_2763
             --model-default force-vm-hardware-version=17
       - name: Run test
-        run: tox -c cluster-api-charmed-k8s-e2e -e e2e -- --infra-branch=$GITHUB_HEAD_REF --control-plane-branch=parsing-fix --metallb-ip-range=10.246.153.239-10.246.153.239
+        run: tox -c cluster-api-charmed-k8s-e2e -e e2e -- --infra-branch=$GITHUB_HEAD_REF --metallb-ip-range=10.246.153.239-10.246.153.239
       - name: Setup Debug Artifact Collection
         if: ${{ failure() }}
         run: mkdir tmp
